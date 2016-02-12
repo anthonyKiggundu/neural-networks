@@ -1,0 +1,467 @@
+# system
+import KTImage
+import os, glob
+import sys
+import time
+import types
+import struct
+import cPickle
+
+
+# math
+import numpy
+import mdp
+from operator import add
+
+import matplotlib.pyplot as plt
+
+# graphics
+from PIL import Image
+
+from OpenGL.GLUT import *
+from OpenGL.GLU  import *
+from OpenGL.GL   import *
+from KTImage import exporttiles
+
+# ratlab modules
+sys.path.append( './util' )
+from util.setup import *
+import world as WORLD
+
+# User-defined modules
+from mlp_node import mlpNode
+from elman_edit import elmanNetwork
+ 
+
+class LocalControl( Freezeable ):
+    def __init__( self ):
+
+        self.defines = EmptyOptionContainer()            # defines
+        self.defines.window_title  = 'RatLab Sampling Program'
+        self.defines.window_width  = None
+        self.defines.window_height = None
+        self.defines.freeze()
+
+        self.cfg = EmptyOptionContainer()                # config
+        self.cfg.file_prefix   = ''
+        self.cfg.setup_file    = 'exp_setup'
+        self.cfg.sfa_network   = None
+        self.cfg.sample_order  = None
+        self.cfg.verbose       = False
+        # spatial sampling
+        self.cfg.sample_dir    = [] 
+        self.cfg.sample_period = None
+        # directional sampling
+        self.cfg.sample_pos   = None
+        self.cfg.freeze()
+
+        self.state = EmptyOptionContainer()            # state
+        self.state.sample_data = []
+        self.state.freeze()
+
+        self.setup     = None                                # global setup
+        self.world     = None                                # world instance
+
+ctrl = LocalControl()# window size
+
+
+#===============================================================================
+# Function converts raw images in sequence folder into binary data
+   
+def convert(folder, file):
+    
+    datafile = open( file, 'wb' )
+
+    # input file sequence
+    img_sequence = os.listdir(folder )
+    img_sequence.sort()
+
+    # data header
+    frame = Image.open( (folder + img_sequence[0]) )
+
+    color_dim = None
+    if frame.mode == 'RGBA' or frame.mode == 'RGB':
+        print ('Color mode is RGB.')
+        color_dim = 3
+    elif frame.mode == 'L':
+        print ('Color mode is greyscale.')
+        color_dim = 1
+    else:
+        print ('Error! Unknown color mode \'%s\'!' % frame.mode)
+        return False
+
+    header = struct.pack( 'iiii', len(img_sequence), # how many frames in the sequence
+                                  frame.size[0],     # width of a single frame
+                                  frame.size[1],     # height of a single frame
+                                  color_dim )        # color dimension (greyscale/RGB)
+    datafile.write( header )
+    # file info
+    space_req  = float(frame.size[0]*frame.size[1]*len(img_sequence)) / (1024.0*1024.0)
+    space_req *= color_dim
+    print ('Writing data to file \'%s\'. Expected size: %.1f megabytes.' % (file, space_req) )    # color values are only stored as characters
+
+    # data loop
+    cnt = 0.0
+    for filename in img_sequence:
+
+        frame_file = Image.open( (folder + filename) )
+        frame_data = frame_file.load()
+
+        for y in range(0, frame_file.size[1]):
+            for x in range(0, frame_file.size[0]):
+    
+                if color_dim == 3:
+                    datafile.write( struct.pack('c',chr(frame_data[x,y][0])) )
+                    datafile.write( struct.pack('c',chr(frame_data[x,y][1])) )
+                    datafile.write( struct.pack('c',chr(frame_data[x,y][2])) )
+                else:
+                    datafile.write( struct.pack('c',chr(frame_data[x,y])) )
+
+        # progress
+        cnt += 1.0
+        done = int( cnt/len(img_sequence)*50.0 )
+        sys.stdout.write( '\r' + '[' + '='*done + '-'*(50-done) + ']~[' + '%.2f' % (cnt/len(img_sequence)*100.0) + '%]' )
+        sys.stdout.flush()
+
+    print ('\n Conversion done.')
+    return datafile
+
+# ------------------ Read Elman hidden Activation file for input to next MLP training
+
+def readInputSet(elman_file):
+    
+    with open(elman_file) as f:
+        polyShape = []
+        for line in f:
+            line = line.split() # to deal with blank 
+            if line:            # lines (ie skip them)
+                line = [float(i) for i in line]
+                polyShape.append(line)
+    return polyShape
+
+# ------------------Trying to see the output of the test data on trained SFA network as image
+    
+def readCoords():
+    file = '/home/anton/Desktop/RatLab/ratlab/exp_trajectory_trainset.txt'
+    f = open(file,"r")
+    lines = f.readlines()
+    coords1 = []
+    coords2 = []
+    temp1 = 0
+    temp2 = 0
+    for x in lines:
+        temp1 = x.split(' ')[1]
+        temp2 = x.split(' ')[2]
+        coords1.append(float(temp1)) 
+        coords2.append(float(temp2))
+    f.close()
+    targetSet = numpy.vstack((coords1, coords2)).T
+    return targetSet 
+ 
+# ------------------------------Visualise the target and result from the MLP
+def errorVisual(errorSet,j,pltTitle):
+   
+    count = numpy.arange(j)
+    plt.title(pltTitle)
+    plt.xlabel('count')
+    plt.ylabel('Avg. Error')
+    plt.plot(count,numpy.array(errorSet),color='Red', linestyle='dashed',linewidth=3.0) 
+    plt.legend(loc=2)   
+    plt.show()
+    
+#----------------------------------- Module to load saved trained network
+
+def load_from_file( filename = "network.pkl" ):
+
+        network = mlpNode(0,0,0 )
+        
+        with open( filename , 'rb') as file:
+            network_dict = cPickle.load(file)
+            
+            network.n_inputs             = network_dict["n_inputs"]            
+            network.n_outputs            = network_dict["n_outputs"]           
+            network.n_hiddens            = network_dict["n_hiddens"]           
+            network.hidWeights           = network_dict["hiddenWeights"]     
+            network.hidBias              = network_dict["hiddenBias"] 
+            network.recWeights           = network_dict["recurrWeights"]
+            network.cont_t               = network_dict["contextUnits"],   
+            network.hidActivation        = network_dict["activation_functions"]
+            network.outBias              = network_dict["outputBias"]             
+            network.outWeights           = network_dict["outputWeights"]
+        
+        return network
+    
+    
+def main():
+        
+    # Now load input data as images converted
+    #if os.path.isdir('./current_experiment/sequence/') == True:
+     #   convert( './current_experiment/sequence/', 
+    #             './current_experiment/sequence_data' )
+     
+   #============================================================================
+   #  tsn_file = sys.argv[1]
+   #  if sys.argv[1] == '-':
+   #      for f in os.listdir( './current_experiment/' ): 
+   #          if '.tsn' in f: tsn_file = f
+   #  if tsn_file == '-':
+   #      print ('Error! No .tsn file was found in folder \'./current_experiment\'.')
+   #      print ('This file is generated by train.py after training a network.')
+   #      sys.exit()
+   # 
+   #  try:
+   #      print ('Loading .tsn file \'%s\'.' % tsn_file)
+   #      tsn_file = open( './current_experiment/'+tsn_file, 'r' )
+   #  except:
+   #      print ('Error opening SFA network file!')
+   #      sys.exit()
+   # 
+   #  ctrl.cfg.sfa_network = pickle.load( tsn_file )
+   #  print(ctrl.cfg.sfa_network)
+   #     
+   #  # Read and translate contents....before execute
+   #  try:
+   #      datafile = open( './current_experiment/sequence_data', 'rb' )
+   #  except:
+   #      print ('Error! Required data file \'sequence data\' could not be opened.')
+   #      print ('       Make sure the file was generated via the SFA data converter.')
+   #      sys.exit()
+   # 
+   #  batch_size=None
+   #  frame_override=None
+   #        
+   #  frames       = struct.unpack( 'i', datafile.read(4) )[0]    # no. of image frames
+   #  frame_dim_x  = struct.unpack( 'i', datafile.read(4) )[0]    # width (in px) of a single frame
+   #  frame_dim_y  = struct.unpack( 'i', datafile.read(4) )[0]    # height of a single frame
+   #  raw_data_dim = struct.unpack( 'i', datafile.read(4) )[0]    # color dimension (greyscale/RGB)
+   # 
+   #  # manual frame override?
+   #  if frame_override != None:
+   #      if frame_override < frames: 
+   #          frames = frame_override
+   #          print ('Frame override: training with', frames, 'frames only.')
+   #      else:
+   #          print ('Warning! Given frame override value is useless and will be ignored.')
+   # 
+   #  # valid batch size?
+   #  if batch_size == None:
+   #      batch_size = frames
+   #  if frames%batch_size != 0:
+   #      print ('Error! batch_size does not divide the given frame count evenly!')
+   #      sys.exit()
+   # 
+   #  # color mode
+   #  if raw_data_dim == 1: print ('Color mode is greyscale.')
+   #  if raw_data_dim == 3: print ('Color mode is RGB color.')
+   #  if raw_data_dim != 1 and raw_data_dim != 3:
+   #      print ('Error! Unknown color mode: ', raw_data_dim)
+   #      return None
+   #     
+   #     
+   #  # Reading Images as test data for SFA network
+   #  # myArray = numpy.zeros((6000,32))
+   #  output_file = './sfa_output.txt'
+   #  for infile in sorted(glob.glob('./TrainImages/*.png')):  
+   #      #print ("Current File Being Processed is: " + infile)
+   #      frame_file = Image.open(infile )
+   #      frame_data = frame_file.load()
+   #      #print ('Reading Test data:', frame_data, 'frames of', frame_dim_x, 'x', frame_dim_y, 'px images.')
+   #      data = None
+   #      i=0
+   #      if raw_data_dim == 3:
+   #          data = numpy.zeros( (1,(frame_dim_x*frame_dim_y*3)), dtype=numpy.float32 ) # row-vector 'matrix'
+   #          for y in range(0,int(frame_dim_y)):
+   #              for x in range(0,int(frame_dim_x)):
+   #                  data[0,i]   = frame_data[x,y][0]
+   #                  data[0,i+1] = frame_data[x,y][1]
+   #                  data[0,i+2] = frame_data[x,y][2]
+   #                  i+=3
+   #      else:
+   #          data = numpy.zeros( (1,(frame_dim_x*frame_dim_y)), dtype=numpy.float32 ) # row-vector 'matrix'
+   #          for y in range(0,int(frame_dim_y)):
+   #              for x in range(0,int(frame_dim_x)):
+   #                  data[0,i] = frame_data[x,y]
+   #                  i+=1
+   #                            
+   #      network_result = ctrl.cfg.sfa_network.execute(data)    # network_result
+   #      with open(output_file,'a') as f_handle:
+   #          numpy.savetxt(f_handle, network_result.reshape(1,32),newline='\n')
+   #      #myArray[j] = network_result
+   #      #j = j + 1
+   #         
+   #  print('SFA output saved to file ',output_file )
+   #============================================================================
+     
+    #===========================================================================
+    # #------------------------------------------------------------------MLP training here.
+    # print('------------ MLP training started----------')
+    # # MLP training phase - on 6000 images
+    # output_file = './sfa_output.txt'
+    # targetSet = readCoords()
+    # mlp = mlpNode(32, 10, 2)
+    # count = 0
+    # filename1 = './mlp_network.pkl'
+    # inputSet = readInputSet(output_file)
+    # mlp_ErrorSet = []
+    # #resultDummy = numpy.zeros((2), dtype=float)
+    # epoch = 1000
+    # while(count <= epoch):
+    #     avrg_error = 0.0
+    #     for t in range(5999):
+    #         mlp.activate(inputSet[t])
+    #         #resultDummy = map(add, resultDummy, numpy.array(result))
+    #         myError = mlp.backwardPropagate(targetSet[t])
+    #         avrg_error += myError
+    #     mlp_ErrorSet.append(avrg_error / 5999.0) 
+    #     count += 1
+    # mlp.save_to_file(filename1)
+    # mlp.visualise('./results/') 
+    #===========================================================================
+       
+    #===========================================================================
+    # print('-------- Now starting testing phase MLP------') 
+    #   
+    # saved_mlp_network = mlp.load_from_file(filename1) #visualise('./results/')
+    # test_error_mlp = []
+    #  for t in range(5998):
+    #          saved_mlp_network.activate(inputSet[t])
+    #          #resultDummy = map(add, resultDummy, numpy.array(result))
+    #          myError = saved_mlp_network.backwardPropagate(targetSet[t])
+    #          test_error_mlp.append(myError)
+    #   
+    # saved_mlp_network.visualise('./savedMLPVisual/')
+    #===========================================================================
+    print('---------  Now starting Elman training--------')
+       
+    #-----------------------------------------------------------------Elman training here
+        
+    elman = elmanNetwork(32, 24, 32)
+    count = 0
+    filename2 = './elman_network_24_Hidden.pkl'
+    output_file = './sfa_output.txt'
+    elman_ErrorSet = []
+    inputSet = readInputSet(output_file)
+    epochs = 1000
+    learn_rate = 0.01
+    while(count <= epochs):
+        avrg_error = 0.0
+        #learn_rate = learn_rate*0.995
+        #print ('Learn rate = ', learn_rate)
+        for t in range(5999-1):
+            x = inputSet[t]   
+            targetSet = inputSet[t+1]
+            elman.activate(x)  
+            myError = elman.backwardPropagate(targetSet,learn_rate)
+            #myError = elman.backwardPropagate(targetSet)
+            avrg_error += myError
+            #if (t % 1000 == 0):
+            #   print (t)
+        #elman.visualise('./savedElmanVisual/')
+        elman_ErrorSet.append(avrg_error / 5998.0)
+        count += 1
+    elman.save_to_file(filename2) #  elman_network =
+    print("Network successfully saved to disk -------# ")
+    #------------------------------------------ elman.visualise('./ElmanVisual')
+    
+#-------------------------------- Testing phase Elman NN
+      
+    print('-------- Now starting testing phase Elman------')
+    #test_error_elman = []
+    saved_elman_network = load_from_file('./elman_network_24_Hidden.pkl')
+    inputSet = readInputSet('./sfa_output.txt')
+    targetSet = readCoords()
+    testResultSet = []
+    #elman_file = './elmanHidActivity34.txt'
+    elman_file_8 = './elmanHidActivity24.txt'
+    for t in range(5999-1):
+        x = inputSet[t]    
+        #targetSet = inputSet[t+1]
+        result = saved_elman_network.activate(x)
+        contLayerOut = saved_elman_network.getOutput()
+        #elman.visualise('./savedElman/')
+        testResultSet.append(result)
+        #KTImage.exporttiles(testResultSet, './savedElman/obs_ElMLP.pgm')
+        #Sprint('---------------Debug ----------', contLayerOut, contLayerOut.shape) 
+        #myError = saved_elman_network.backwardPropagate(targetSet)
+        with open(elman_file_8,'a') as f_handle:
+            numpy.savetxt(f_handle, contLayerOut.reshape(1,24),newline='\n') # was (1,8), compiler errored
+                                                                    # 'ValueError: total size of new array must be unchanged'
+            
+    #------------------------------------- elman.visualise('./savedElmanVisual')
+    # -----------------------------------------------------------MLP training phase - on Elman Hidden Activation
+       
+    print('------- now starting MLP training on Hidden Activation from  Elman NN-------')
+      
+    targetSet = readCoords()
+    inputData = readInputSet('./elmanHidActivity24.txt') #elman_file
+    saved_mlpElman = './MLP_Elman_Activity_Network_24.pkl'
+    elman_mlp = mlpNode( 24,12, 2) # (16,8,2 / 8,4,2 - for MLP_Elman with 8 Hidden Units)
+    count = 0
+    mlp_elman_ErrorSet = []
+    # mlp_file = './mlpSave.txt'
+    epoch = 1000
+    while(count <= epoch):
+        avrg_error = 0.0
+        for t in range(5998):
+            elman_mlp.activate(inputData[t])
+            myError = elman_mlp.backwardPropagate(targetSet[t])
+            avrg_error += myError
+        #elman_mlp.visualise('./savedMLPVisual/')
+        mlp_elman_ErrorSet.append(avrg_error / 5998.0) 
+        count += 1
+    elman_mlp.save_to_file(saved_mlpElman)
+
+#===============================================================================
+# # ---------------------------------------------- Test set on both trained MLPs
+# #----First MLP - original 
+#     print('--------Good we are now Original MLP Testing phase --------')
+#     true_MLP_network = './mlp_network.pkl'
+#     targetSet = readCoords()
+#     test_mlp = mlpNode( 32,10, 2)
+#     inputTestSet = readInputSet('./sfa_output.txt')
+#     saved_mlp_network_1 = test_mlp.load_from_file(true_MLP_network)
+#     errorSetTrue1 = []
+#     for t in range(3000):
+#         saved_mlp_network_1.activate(inputTestSet[t])
+#         #resultDummy = map(add, resultDummy, numpy.array(result))
+#         myError = saved_mlp_network_1.backwardPropagate(targetSet[t])
+#         errorSetTrue1.append(myError)
+#         
+#     pltTitle4 = 'Plot of saved MLP test Errorset'
+#     errorVisual( errorSetTrue1,3000,pltTitle4)
+# #---- Second MLP - on hidden Elman activity   
+#     print('--------Good we are now Elman MLP Testing phase --------')    
+#     mlpElman = './MLP_Elman_Activity_Network.pkl'
+#     test_elman_mlp = mlpNode( 34,10, 2)
+#     inputTestSet = readInputSet('./sfa_output.txt')
+#     saved_mlp_network_2 = test_elman_mlp.load_from_file(mlpElman)
+#     errorSetTrue2 = []
+#     for t in range(2998):
+#         saved_mlp_network_2.activate(inputTestSet[t])
+#         #resultDummy = map(add, resultDummy, numpy.array(result))
+#         myError = saved_mlp_network_2.backwardPropagate(targetSet[t+1])
+#         errorSetTrue2.append(myError)
+#===============================================================================
+# ----------------------------------------------- Display errors graphically from MLP and ElmanMLP.
+
+    pltTitle1 = 'Plot of MLP Training Errorset'
+    pltTitle2 = 'Plot of MLP  Training on Elman Hidden Activity Errorset'
+    pltTitle3 = 'Plot of saved MLPElman test Errorset'
+    pltTitle4 = 'Plot of saved MLP test Errorset'
+    #errorVisual( mlp_ErrorSet,1001,pltTitle1)
+    errorVisual(mlp_elman_ErrorSet, 1001,pltTitle2)
+    #errorVisual( errorSetTrue1,3000,pltTitle4)
+    #errorVisual( errorSetTrue2,2999,pltTitle3)
+    
+
+    print ('Loading current experimental setup.')
+    try:
+        ctrl.setup = Setup( './current_experiment/exp_setup' )
+        ctrl.defines.window_width  = int(ctrl.setup.rat.fov[0])
+        ctrl.defines.window_height = int(ctrl.setup.rat.fov[1])
+    except:
+        print ('Error! Could not find file \'./current_experiment/exp_setup\'.')
+        print ('(This file should is automatically generated by ratlab.py calls)')
+        sys.exit()
+        
+main() # <<<   <<<   <<<   <<<   <<<   <<<   <<<   <<<   <<<   <<<   <<<[ main ]
