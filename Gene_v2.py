@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 # ✅ Step 1: Load Pretrained Models
 def load_pretrained_models(num_models=30):
     """Loads multiple pretrained MobileNetV3-Small models"""
-    return [models.mobilenet_v3_small(pretrained=True) for _ in range(num_models)]
+    return [models.mobilenet_v3_small(pretrained=True) for _ in range(num_models)] # pretrained=True
 
 models_list = load_pretrained_models()
 
@@ -84,6 +84,7 @@ def fine_tune_model(model, train_loader, epochs=5):
     model.train()
 
     for epoch in range(epochs):
+        total_loss, total_correct, total_samples = 0, 0, 0
         for images, labels in train_loader:
             images, labels = images.to(device), labels.to(device)
 
@@ -93,6 +94,14 @@ def fine_tune_model(model, train_loader, epochs=5):
             loss.backward()
             optimizer.step()
 
+            total_loss += loss.item()
+            _, predicted = torch.max(outputs, 1)
+            total_correct += (predicted == labels).sum().item()
+            total_samples += labels.size(0)
+
+        avg_loss = total_loss / len(train_loader)
+        avg_accuracy = total_correct / total_samples
+        print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}, Accuracy: {avg_accuracy * 100:.2f}%")
 
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
