@@ -36,7 +36,6 @@ def get_model_metadata(model):
     stability = np.mean(weight_stability)
     health = np.mean(health_scores)
     
-    #print("\n Weight stats: ", sparsity, stability, health)
     return {"sparsity": sparsity, "stability": stability, "health": health}
 
 # Compute Metadata for Each Model
@@ -77,7 +76,7 @@ def select_best_models(metadata_list, models_list, num_selected=2):
     
     # Perform crossover and mutation to generate new models
     new_models = []
-    for i in range(0, len(selected_models), 2):
+    for i in range(0, len(selected_models), 4): #2
         if i+1 < len(selected_models):
             child1, child2 = crossover(selected_models[i], selected_models[i+1])
             mutate(child1)
@@ -108,27 +107,65 @@ def federated_averaging(models_list):
 fedavg_model = federated_averaging(models_list)
 ga_model = federated_averaging(selected_models)  # FedAvg on GA-selected models
 
-# Evaluate Models on CIFAR-10
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+criterion = nn.CrossEntropyLoss()
+
+# Fine-tune the selected models
+def fine_tune_model(model, train_loader, epochs=5):
+    """Fine-tunes the GA-selected model."""
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    criterion = nn.CrossEntropyLoss()
+    model.train()
+
+    for epoch in range(epochs):
+        total_loss, total_correct, total_samples = 0, 0, 0
+        for images, labels in train_loader:
+            images, labels = images.to(device), labels.to(device)
+
+            optimizer.zero_grad()
+            outputs = model(images)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+            _, predicted = torch.max(outputs, 1)
+            total_correct += (predicted == labels).sum().item()
+            total_samples += labels.size(0)
+
+        avg_loss = total_loss / len(train_loader)
+        avg_accuracy = total_correct / total_samples
+        print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}, Accuracy: {avg_accuracy * 100:.2f}%")
+
+# CIFAR-10 Dataset and DataLoader
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
+
+train_dataset = datasets.CIFAR10(root="./data", train=True, download=True, transform=transform)
+train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=4, pin_memory=True)
+
+# Fine-tune the GA-selected model
+fine_tune_model(ga_model, train_loader)
+
+# Evaluate Models on CIFAR-10
 test_dataset = datasets.CIFAR10(root="./data", train=False, download=True, transform=transform)
 test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=4, pin_memory=True)
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-criterion = nn.CrossEntropyLoss()
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# criterion = nn.CrossEntropyLoss()
 
 def evaluate_model(model, test_loader):
     """Computes loss and accuracy of a given model."""
     model.to(device)
     model.eval()
     total_loss, total_correct, total_samples = 0, 0, 0
-    loss_list, accuracy_list = [], []
+    loss_list, accuracy_list = []
 
     with torch.no_grad():
-        for images, labels in test_loader:
+        for epoch, (images, labels) in enumerate(test_loader, 1):
             images, labels = images.to(device), labels.to(device)
             outputs = model(images)
             loss = criterion(outputs, labels)
@@ -142,6 +179,9 @@ def evaluate_model(model, test_loader):
 
             loss_list.append(loss.item())
             accuracy_list.append(correct / labels.size(0))
+
+            # Print the loss and accuracy for the current epoch
+            print(f"Epoch {epoch}: Loss = {loss.item():.4f}, Accuracy = {correct / labels.size(0) * 100:.2f}%")
 
     avg_loss = total_loss / len(test_loader)
     avg_accuracy = total_correct / total_samples
