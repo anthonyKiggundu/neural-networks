@@ -8,6 +8,8 @@ import torch.optim as optim
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 from torch.utils.data import DataLoader
+import psutil
+import time
 
 # Load Pretrained Models
 def load_pretrained_models(num_models=15):
@@ -139,9 +141,10 @@ def federated_averaging(models_list):
     global_model.load_state_dict(avg_state_dict)
     return global_model
 
+
+ga_model = federated_averaging(selected_models)
 fedavg_model = federated_averaging(models_list)
 fedsgd_model = federated_sgd(models_list, train_loader)
-ga_model = federated_averaging(selected_models)  # FedAvg on GA-selected models
 
 
 # Fine-tune the selected models
@@ -169,7 +172,7 @@ def fine_tune_model(model, train_loader, epochs=5):
 
         avg_loss = total_loss / len(train_loader)
         avg_accuracy = total_correct / total_samples
-        print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}, Accuracy: {avg_accuracy * 100:.2f}%")
+        print(f"FineTuning - Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}, Accuracy: {avg_accuracy * 100:.2f}%")
 
 
 # Fine-tune the GA-selected model
@@ -212,7 +215,7 @@ def evaluate_model(model, test_loader):
             accuracy_list.append(correct / labels.size(0))
 
             # Print the loss and accuracy for the current epoch
-            print(f"Epoch {epoch}: Loss = {loss.item():.4f}, Accuracy = {correct / labels.size(0) * 100:.2f}%")
+            print(f"Evaluation - Epoch {epoch}: Loss = {loss.item():.4f}, Accuracy = {correct / labels.size(0) * 100:.2f}%")
 
     avg_loss = total_loss / len(test_loader)
     avg_accuracy = total_correct / total_samples
@@ -270,6 +273,8 @@ plt.ylabel("Accuracy (%)")
 plt.title("Accuracy Comparison: FedAvg vs. GA")
 plt.legend()
 
+plt.savefig("metric_compared.pdf", dpi=300, bbox_inches="tight")
+
 # Energy Consumption Comparison
 labels = ['FedAvg', 'FedSGD', 'GA']
 durations = [fedavg_duration, fedsdg_duration, ga_duration]
@@ -300,6 +305,8 @@ ax3.legend(loc='upper right')
 
 fig.tight_layout()
 plt.title("Energy Consumption, Computational Power, and Complexity")
+
+plt.savefig("resources_compared.pdf", dpi=300, bbox_inches="tight")
 
 plt.show()
 
