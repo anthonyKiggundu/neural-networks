@@ -11,14 +11,17 @@ from torch.utils.data import DataLoader
 import psutil
 import time
 
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("\n DEVICE:: ", device)
+
 # Load Pretrained Models
 def load_pretrained_models(num_models=15):
     """Loads multiple pretrained MobileNetV3-Small models"""
-    return [models.mobilenet_v3_small(pretrained=True) for _ in range(num_models)]
+    return [models.mobilenet_v3_small(pretrained=True).to(device) for _ in range(num_models)]
 
 models_list = load_pretrained_models()
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 criterion = nn.CrossEntropyLoss()
 
 # CIFAR-10 Dataset and DataLoader
@@ -63,8 +66,8 @@ def fitness_function(metadata):
 
 def crossover(parent1, parent2):
     """Performs crossover between two parent models"""
-    child1 = models.mobilenet_v3_small(pretrained=False)
-    child2 = models.mobilenet_v3_small(pretrained=False)
+    child1 = models.mobilenet_v3_small(pretrained=False).to(device)
+    child2 = models.mobilenet_v3_small(pretrained=False).to(device)
     
     for key in parent1.state_dict().keys():
         if random.random() > 0.5:
@@ -91,7 +94,7 @@ def select_best_models(metadata_list, models_list, num_selected=2):
     
     # Perform crossover and mutation to generate new models
     new_models = []
-    for i in range(0, len(selected_models), 4): #2
+    for i in range(0, len(selected_models), 2): #2
         if i+1 < len(selected_models):
             child1, child2 = crossover(selected_models[i], selected_models[i+1])
             mutate(child1)
@@ -106,7 +109,7 @@ selected_models = select_best_models(metadata_list, models_list)
 
 def federated_sgd(models_list, train_loader, epochs=1):
     """Aggregates multiple MobileNetV3 models using Federated SGD (FedSGD)."""
-    global_model = models.mobilenet_v3_small(pretrained=False)  # Create empty global model
+    global_model = models.mobilenet_v3_small(pretrained=False).to(device)  # Create empty global model
     global_model.to(device)
     optimizer = optim.SGD(global_model.parameters(), lr=0.01)
 
@@ -128,7 +131,7 @@ def federated_sgd(models_list, train_loader, epochs=1):
 # Aggregate Selected Models with FedAvg
 def federated_averaging(models_list):
     """Aggregates multiple MobileNetV3 models using Federated Averaging (FedAvg)."""
-    global_model = models.mobilenet_v3_small(pretrained=False)  # Create empty global model
+    global_model = models.mobilenet_v3_small(pretrained=False).to(device)  # Create empty global model
     global_state_dict = global_model.state_dict()
 
     avg_state_dict = {key: torch.zeros_like(param, dtype=torch.float32) for key, param in global_state_dict.items()}
@@ -256,28 +259,28 @@ plt.figure(figsize=(12, 5))
 # Loss Comparison
 plt.subplot(1, 2, 1)
 plt.plot(fedavg_loss_list, label="FedAvg Loss", color="red")
-plt.plot(ga_loss_list, label="GA Loss", color="blue")
 plt.plot(fedsdg_loss_list, label="FedSGD Loss", color="green")
+plt.plot(ga_loss_list, label="FedAvgen Loss", color="blue")
 plt.xlabel("Batch")
 plt.ylabel("Loss")
-plt.title("Loss Comparison: FedAvg vs. GA")
+plt.title("Loss Comparison: FedAvg vs. FedSGD vs. FedAvgen")
 plt.legend()
 
 # Accuracy Comparison
 plt.subplot(1, 2, 2)
 plt.plot([acc * 100 for acc in fedavg_acc_list], label="FedAvg Accuracy", color="red")
 plt.plot([acc * 100 for acc in fedsdg_acc_list], label="FedSGD Accuracy", color="green")
-plt.plot([acc * 100 for acc in ga_acc_list], label="GA Accuracy", color="blue")
+plt.plot([acc * 100 for acc in ga_acc_list], label="FedAvgen Accuracy", color="blue")
 plt.xlabel("Batch")
 plt.ylabel("Accuracy (%)")
-plt.title("Accuracy Comparison: FedAvg vs. GA")
+plt.title("Accuracy Comparison: FedAvg vs. FedSGD vs. FedAvgen")
 plt.legend()
 
-plt.savefig("metric_compared.pdf", dpi=300, bbox_inches="tight")
+plt.savefig("metric_compared_run2.pdf", dpi=300, bbox_inches="tight")
 
 # Energy Consumption Comparison
-labels = ['FedAvg', 'FedSGD', 'GA']
-durations = [fedavg_duration, fedsdg_duration, ga_duration]
+labels = ['FedAvg', 'FedSGD', 'FedAvgen']
+durations = [fedavg_duration, fedsdg_duration, fedavgen_duration] #ga_duration]
 cpu_usages = [fedavg_cpu, fedsdg_cpu, ga_cpu]
 mem_usages = [fedavg_mem, fedsdg_mem, ga_mem]
 
@@ -312,6 +315,7 @@ plt.show()
 
 # Print Final Comparison
 print(f"📉 FedAvg Final Loss: {fedavg_loss:.4f}, ✅ Accuracy: {fedavg_acc * 100:.2f}%")
+print(f"📉 FedSGD Final Loss: {fedsdg_loss:.4f}, ✅ Accuracy: {fedsdg_acc * 100:.2f}%")
 print(f"📉 GA Final Loss: {ga_loss:.4f}, ✅ Accuracy: {ga_acc * 100:.2f}%")
 
 print(f"⚡ FedAvg Duration: {fedavg_duration:.2f}s, CPU Usage: {fedavg_cpu:.2f}%, Memory Usage: {fedavg_mem:.2f}MB")
