@@ -281,8 +281,8 @@ plt.savefig("metric_compared_run2.pdf", dpi=300, bbox_inches="tight")
 # Energy Consumption Comparison
 labels = ['FedAvg', 'FedSGD', 'FedAvgen']
 durations = [fedavg_duration, fedsdg_duration, fedavgen_duration] #ga_duration]
-cpu_usages = [fedavg_cpu, fedsdg_cpu, ga_cpu]
-mem_usages = [fedavg_mem, fedsdg_mem, ga_mem]
+cpu_usages = [fedavg_cpu, fedsdg_cpu, fedavgen_cpu]
+mem_usages = [fedavg_mem, fedsdg_mem, fedavgen_mem]
 
 plt.subplot(2, 2, 3)
 x = np.arange(len(labels))
