@@ -1,14 +1,5 @@
 import numpy as np
 import matplotlib.pyplot as plt
-'''
-The Insurance Gap in Agentic 6G Systems:
-As AI systems are increasingly embedded into safety-critical and customer-facing operations, the financial and reputational consequences of failures—ranging from SLA violations to regulatory penalties—have grown substantially. 
-Traditional AI insurance products (e.g., Technology Errors & Omissions, Cyber Liability, and Directors and Officers coverage) aim to transfer legal defense costs, 
-operational downtime, and compliance risks from firms to insurers. In principle, underwriting AI-specific risks such as model drift, bias, 
-and adversarial attacks can both protect organizations and incentivize better governance practices.
-
-In practice, however, current AI insurance methodologies are incompatible with the operational realities of 6G
-'''
 
 class Reinsurer:
     def __init__(self, attachment_point, coverage_share):
@@ -37,11 +28,16 @@ class AggressivePlanner(InsurableModel):
         }
 
 class InsurableModel:
+
     def __init__(self, profile):
         self.profile = profile
 
     def infer(self, kpis):
-        raise NotImplementedError
+        return {
+            "bt": confidence,
+            "latency": lv,
+            "intent_alignment": score
+        }
 
 
 class ModelUnderwritingProfile:
@@ -181,6 +177,28 @@ def underwrite_model(profile, telemetry):
 
     return True, "Approved"
 
+def premium_kernel(self, risk, bt_rep):
+    scaling = (
+        1
+        + self.gamma * risk["epistemic"]
+        + self.beta * risk["network"]
+        + self.delta * risk["staleness"]
+    )
+    confidence_credit = np.exp(-bt_rep)
+    return self.p_base * scaling * confidence_credit
+
+
+def governance_credit(self, risk, bt_rep, step):
+    if risk["fraud"] and step > 100:
+        return 0.0
+    return self.zeta_max
+
+
+
+for model in models:
+    metadata = model.infer(kpis)
+    risk = risk_engine(metadata, kpis)
+    premium = premium_engine(risk, metadata)
 
 # --- Run and Visualize ---
 evaluator = Agentic6GInsuranceEval()
