@@ -1,4 +1,5 @@
-import numpy as np
+mport numpy as np
+import torch
 import matplotlib.pyplot as plt
 
 class Reinsurer:
@@ -13,31 +14,57 @@ class Reinsurer:
         return premium
 
 
-class ConservativePlanner(InsurableModel):
+class ConservativePlanner:
     def infer(self, kpis):
         return {
             "bt": kpis["confidence"] * 0.9,
             "latency": kpis["latency"] * 1.1
         }
 
-class AggressivePlanner(InsurableModel):
+
+class AggressivePlanner:
     def infer(self, kpis):
         return {
             "bt": kpis["confidence"],
             "latency": kpis["latency"] * 0.8
         }
 
-class InsurableModel:
 
-    def __init__(self, profile):
+class InsurableModel:
+    def __init__(self, profile, pretrained_model=None):
+        """
+        :param profile: A profile object containing underwriting rules
+        :param pretrained_model: A pretrained PyTorch model to use for inference, optional
+        """
         self.profile = profile
+        self.pretrained_model = pretrained_model  # Store the pretrained model if provided
 
     def infer(self, kpis):
-        return {
-            "bt": confidence,
-            "latency": lv,
-            "intent_alignment": score
-        }
+        """
+        Infer metadata using the pretrained model or fallback to default behavior.
+        :param kpis: A dictionary of KPIs (e.g., confidence, latency)
+        :return: Metadata extracted by the model
+        """
+        if self.pretrained_model:
+            # Use the pretrained model for inference
+            input_tensor = torch.tensor([kpis["confidence"], kpis["latency"]], dtype=torch.float32)
+            input_tensor = input_tensor.unsqueeze(0)  # Add batch dimension
+
+            self.pretrained_model.eval()
+            with torch.no_grad():
+                output = self.pretrained_model(input_tensor)
+
+            # Assume output has two features: [bt, latency]
+            return {
+                "bt": float(output[0, 0]),  # Predicted confidence
+                "latency": float(output[0, 1])  # Predicted latency
+            }
+        else:
+            # Default inference if no pretrained model exists
+            return {
+                "bt": kpis["confidence"],
+                "latency": kpis["latency"]
+            }
 
 
 class ModelUnderwritingProfile:
@@ -80,149 +107,158 @@ class Agentic6GInsuranceEval:
         self.dt_req = 1.0     # 6G Slice Latency Deadline (ms)
         self.p_base = 10.0    # Baseline premium ($)
         
-        # Risk Weighting Factors (The Gamma, Beta, Delta from your LaTeX)
+        # Risk Weighting Factors
         self.gamma = 25.0     # Epistemic Risk Weight (Uncertainty)
         self.beta = 8.0       # Environmental Risk Weight (Jitter)
         self.delta = 20.0     # Staleness Risk Weight (Latency Penalty)
         self.zeta_max = 0.35  # Max Governance Credit (35% discount)
 
-    def generate_telemetry(self):
-        """Generates realistic 6G telemetry: Jitter, True Confidence, and Reported Confidence."""
-        t = np.arange(self.steps)
-        
-        # Phase 1: Nominal V2X Operation (0-50)
-        # Phase 2: Adversarial Attack / Sensor Drift (50-100)
-        # Phase 3: Malicious Metadata Reporting (100-150)
-        
-        jitter = 0.05 + 0.1 * np.random.rand(self.steps)
-        bt_true = 0.95 * np.ones(self.steps)
-        
-        # Phase 2: High Jitter + Low Confidence
-        jitter[50:100] += 0.55
-        bt_true[50:100] -= 0.6
-        
-        # Phase 3: Malicious Reporting (Low true confidence, but Agent claims high confidence)
-        jitter[100:150] += 0.45
-        bt_true[100:150] -= 0.7
-        
-        bt_reported = bt_true.copy()
-        bt_reported[100:150] = 0.9  # The "Malicious Lie"
-        
-        return jitter, bt_true, bt_reported
 
-    def calculate_premium(self, bt_rep, bt_true, jitter, lv, step):
-        """Calculates the dynamic premium with Governance Credit revocation logic."""
-        # 1. Calculate Risk Components
-        epistemic_risk = self.gamma * (1 - bt_rep)
-        env_risk = self.beta * jitter
-        staleness_risk = self.delta * max(0, lv - self.dt_req)
-        
-        total_risk_premium = self.p_base + epistemic_risk + env_risk + staleness_risk
-        
-        # 2. Evaluate Governance Credit (zeta)
-        # Credit is revoked if Reported Confidence is high but Environment Jitter is also high
-        # (Indicates the Agent is ignoring the safety context / out-of-distribution state)
-        zeta = self.zeta_max
-        if step > 100 and jitter > 0.4 and bt_rep > 0.8:
-            zeta = 0.0  # FRAUD DETECTED: Revoke Safety Dividend
-            
-        return total_risk_premium * (1 - zeta)
+# --- Layered Pipeline ---
 
-    def evaluate(self):
-        jitter, bt_true, bt_rep = self.generate_telemetry()
-        p_history = []
-        lv_history = []
-        
-        for i in range(self.steps):
-            # Agent logic: Increase reasoning depth (Lv) as confidence (Bt) drops
-            # But Agent is aware of the 'delta' penalty, so it stays near 'dt_req'
-            target_lv = 0.4 + (1 - bt_rep[i]) * 0.9
-            lv_opt = min(target_lv, self.dt_req + 0.2) # Adaptive Reasoning
-            
-            p = self.calculate_premium(bt_rep[i], bt_true[i], jitter[i], lv_opt, i)
-            p_history.append(p)
-            lv_history.append(lv_opt)
-            
-        return jitter, bt_true, bt_rep, lv_history, p_history
+def stream_kpis(steps=150):
+    t = np.arange(steps)
+    jitter = 0.05 + 0.1 * np.random.rand(steps)
+    bt_true = 0.95 * np.ones(steps)
+    
+    # Phase 2: High Jitter + Low Confidence
+    jitter[50:100] += 0.55
+    bt_true[50:100] -= 0.6
 
-def apply_coverage_limits(premium, risk, coverage):
-    uncovered = False
-
-    if risk["epistemic"] > coverage.max_epistemic_risk:
-        uncovered = True
-    if risk["network"] > coverage.max_network_risk:
-        uncovered = True
-    if risk["staleness"] > coverage.max_staleness_risk:
-        uncovered = True
-
-    if uncovered:
-        premium *= coverage.uncovered_penalty  # Self-insurance kicks in
-
-    return min(premium, coverage.premium_cap)
+    # Phase 3: Malicious Reporting
+    jitter[100:150] += 0.45
+    bt_true[100:150] -= 0.7
+    
+    bt_reported = bt_true.copy()
+    bt_reported[100:150] = 0.9  # The "Malicious Lie"
+    
+    return jitter, bt_true, bt_reported
 
 
-def model_risk_multiplier(profile):
-    return 1 + profile.fraud_penalty
+def extract_metadata(jitter, bt_reported, bt_true):
+    return {
+        "bt_reported": bt_reported,
+        "bt_true": bt_true,
+        "jitter": jitter,
+    }
 
 
-def underwrite_model(profile, telemetry):
-    if np.mean(telemetry["bt_true"]) < profile.min_confidence:
-        return False, "Rejected: Low epistemic reliability"
+def calculate_risk_factors(metadata, evaluator, step, planner):
+    kpis = {"confidence": metadata["bt_reported"][step], "latency": metadata["jitter"][step]}
+    inferred_metadata = planner.infer(kpis)
 
-    if np.max(telemetry["jitter"]) > profile.max_jitter:
-        return False, "Rejected: Excessive jitter sensitivity"
+    epistemic_risk = evaluator.gamma * (1 - inferred_metadata["bt"])
+    env_risk = evaluator.beta * metadata["jitter"][step]
+    staleness_risk = evaluator.delta * max(0, evaluator.dt_req - inferred_metadata["latency"])
+    return {"epistemic": epistemic_risk, "network": env_risk, "staleness": staleness_risk}
 
-    if np.mean(telemetry["lv"]) > profile.max_latency_violation:
-        return False, "Rejected: SLA instability"
 
-    return True, "Approved"
-
-def premium_kernel(self, risk, bt_rep):
-    scaling = (
-        1
-        + self.gamma * risk["epistemic"]
-        + self.beta * risk["network"]
-        + self.delta * risk["staleness"]
+def premium_engine(risk_factors, evaluator, step, lv_opt, contract):
+    total_risk_premium = (
+        evaluator.p_base
+        + risk_factors["epistemic"]
+        + risk_factors["network"]
+        + risk_factors["staleness"]
     )
-    confidence_credit = np.exp(-bt_rep)
-    return self.p_base * scaling * confidence_credit
+    if total_risk_premium > contract.premium_cap:
+        total_risk_premium *= contract.uncovered_penalty
+    return total_risk_premium
 
 
-def governance_credit(self, risk, bt_rep, step):
-    if risk["fraud"] and step > 100:
-        return 0.0
-    return self.zeta_max
+def apply_governance_logic(premium, metadata, evaluator, step, reinsurer):
+    zeta = evaluator.zeta_max
+    if step > 100 and metadata["jitter"][step] > 0.4 and metadata["bt_reported"][step] > 0.8:
+        zeta = 0.0  # Governance Credit revoked for fraud detection
+    adjusted_premium = premium * (1 - zeta)
+    return reinsurer.absorb(adjusted_premium), zeta
 
 
+def visualize_results(premium_history, jitter, bt_true, bt_reported, lv_history):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
 
-for model in models:
-    metadata = model.infer(kpis)
-    risk = risk_engine(metadata, kpis)
-    premium = premium_engine(risk, metadata)
+    # Premium Dynamics
+    ax1.plot(premium_history, color="crimson", linewidth=2.5, label="Premium ($)")
+    ax1.set_ylabel("Cost ($)")
+    ax1.set_title("6G AI Insurance Evaluation")
+    ax1.legend()
+    ax1.grid(True)
 
-# --- Run and Visualize ---
-evaluator = Agentic6GInsuranceEval()
-jitter, b_true, b_rep, lv, premiums = evaluator.evaluate()
+    # Metadata
+    ax2.plot(bt_true, label="True Confidence", linestyle="--", alpha=0.5)
+    ax2.plot(bt_reported, label="Reported Confidence", linewidth=2, color="green")
+    ax2.fill_between(range(len(bt_reported)), 0, 1.2, where=(np.array(jitter) > 0.4), color='gray', alpha=0.3, label="High Jitter Zone")
+    ax2.legend()
+    ax2.grid(True)
 
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), sharex=True)
+    plt.tight_layout()
+    plt.show()
 
-# Top Plot: Premium Dynamics
-ax1.plot(premiums, color='crimson', linewidth=2.5, label='Dynamic Premium ($P_t$)')
-ax1.set_ylabel('Insurance Cost ($)')
-ax1.set_title('Integrated 6G AI Insurance Evaluation: Adversarial & Governance Stress-Test')
-ax1.grid(True, alpha=0.3)
-ax1.legend(loc='upper left')
 
-# Bottom Plot: Metadata & Forensics
-ax2.plot(b_true, color='blue', linestyle='--', alpha=0.5, label='True Internal Confidence')
-ax2.plot(b_rep, color='green', linewidth=2, label='Reported Metadata ($B_T$)')
-ax2.plot(lv, color='orange', label='Verification Latency ($L_v$)')
-ax2.axhline(y=1.0, color='black', linestyle=':', label='6G SLA ($\Delta t_{req}$)')
-ax2.set_ylabel('Metadata Value')
-ax2.set_xlabel('Decision Epoch (6G Transmission Time Intervals)')
-ax2.fill_between(range(50, 100), 0, 1.2, color='gray', alpha=0.1, label='Adversarial Interference')
-ax2.fill_between(range(100, 150), 0, 1.2, color='red', alpha=0.05, label='Metadata Manipulation Zone')
-ax2.legend(loc='lower left')
+# --- Pretrained Model Integration Example ---
+def load_pretrained_model():
+    """
+    Load a pretrained model (e.g., ResNet or an LSTM-based model).
+    This is an example function. Replace model structure for your specific use case.
+    """
+    from torchvision import models
+    from torch import nn
 
-plt.tight_layout()
-plt.show()
+    # Example: Load a pretrained ResNet model (replace with a time-series-relevant model if necessary).
+    model = models.resnet18(pretrained=True)
+
+    # Modify the final fully-connected layer to output two features: [bt, latency].
+    model.fc = nn.Linear(model.fc.in_features, 2)
+    return model
+
+
+# --- Main Pipeline ---
+def main():
+    # Initialization
+    evaluator = Agentic6GInsuranceEval(steps=150)
+    pretrained_model = load_pretrained_model()
+    planner = ConservativePlanner()
+    profile = ModelUnderwritingProfile("TestProfile", 0.8, 0.5, 1.2, 0.2, 1.1)
+    contract = CoverageContract(0.8, 0.6, 0.4, 50.0)
+    reinsurer = Reinsurer(30, 0.7)
+
+    pretrained_model = load_pretrained_model()
+    # Initialize InsurableModel with the pretrained model
+    insurable_model = InsurableModel(profile, pretrained_model)
+
+    # Generate simulated KPI data
+    jitter, bt_true, bt_reported = stream_kpis(evaluator.steps)
+    metadata = extract_metadata(jitter, bt_reported, bt_true)
+
+    premium_history = []
+    zeta_history = []
+    lv_history = []
+
+    for step in range(evaluator.steps):
+        # Infer metadata using the pretrained model
+        inferred_metadata = insurable_model.infer({
+            "confidence": metadata["bt_reported"][step],
+            "latency": metadata["jitter"][step]
+        })
+
+        # Agent decision logic
+        target_lv = 0.4 + (1 - inferred_metadata["bt"]) * 0.9
+        lv_opt = min(target_lv, evaluator.dt_req + 0.2)
+
+        # Calculate risk factors and premiums
+        risk = calculate_risk_factors(metadata, evaluator, step, planner)
+        premium = premium_engine(risk, evaluator, step, lv_opt, contract)
+
+        # Apply governance logic and reinsurer logic
+        adjusted_premium, zeta = apply_governance_logic(premium, metadata, evaluator, step, reinsurer)
+
+        # Record results
+        premium_history.append(adjusted_premium)
+        zeta_history.append(zeta)
+        lv_history.append(lv_opt)
+
+    # Visualization
+    visualize_results(premium_history, jitter, bt_true, bt_reported, lv_history)
+
+
+if __name__ == "__main__":
+    main()
