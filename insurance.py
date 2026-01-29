@@ -7,7 +7,7 @@ import requests
 import pandas as pd
 from sklearn.model_selection import train_test_split  # Add this
 from torch import nn
-from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments
+from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments, default_data_collator
 from peft import LoraConfig, get_peft_model, TaskType
 from datasets import Dataset, DatasetDict  # Simplify creating and loading datasets
 from torchvision import models
@@ -553,44 +553,71 @@ def fine_tune_model(train_data, base_model_name, tokenizer, val_data=None, save_
     hf_train_dataset = Dataset.from_pandas(train_data)
     hf_val_dataset = Dataset.from_pandas(val_data) if val_data is not None else None
 
-    # Ensure pad token exists
+    # Explicitly add a pad token if missing
     if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.add_special_tokens({"pad_token": "<|pad|>"})
 
     # ✅ CORRECT batched preprocessing
     def preprocess_function(batch):
         prompts = batch["kpi_input"]
         targets = batch["kpi_description"]
+        #full_texts = [
+        #    prompt + "\n" + target
+        #    for prompt, target in zip(prompts, targets)
+        #]
 
-        full_texts = [
-            prompt + "\n" + target
-            for prompt, target in zip(prompts, targets)
-        ]
+        full_texts = [p + "\n" + t + tokenizer.eos_token for p, t in zip(prompts, targets)]
 
         tokenized = tokenizer(
             full_texts,
             truncation=True,
             max_length=512,
-            padding=True,
+            padding="max_length",
         )
 
         labels = []
-        for i, prompt in enumerate(prompts):
-            prompt_tokens = tokenizer(
-                prompt,
-                truncation=True,
-                max_length=512,
-                padding=True,
-            )["input_ids"]
-
-            label = tokenized["input_ids"][i].copy()
-
-            # mask prompt tokens
-            label[: len(prompt_tokens)] = [-100] * len(prompt_tokens)
+        for i, text in enumerate(full_texts):
+            input_ids = tokenized["input_ids"][i]
+            # Create labels: start as a copy of input_ids
+            label = list(input_ids)
+            
+            # Find where the target starts to mask the prompt
+            # A more robust way: tokenize prompt only to find length
+            tokenized_prompt = tokenizer(prompts[i] + "\n", truncation=True, max_length=512)
+            prompt_len = len(tokenized_prompt["input_ids"])
+            
+            # Mask prompt tokens with -100
+            for j in range(len(label)):
+                if j < prompt_len:
+                    label[j] = -100
+                # Also mask padding tokens
+                if input_ids[j] == tokenizer.pad_token_id:
+                    label[j] = -100
             labels.append(label)
 
         tokenized["labels"] = labels
         return tokenized
+
+        #tokenized['labels'] = tokenized['input_ids'].copy()  # Copy input IDs into labels
+
+        # Apply masking for the prompt tokens
+        #for i, prompt in enumerate(prompts):
+        #    prompt_tokens = tokenizer(
+        #        prompt,
+        #        truncation=True,
+        #        max_length=512,
+        #        padding=True,
+        #    )["input_ids"]
+
+        #    num_prompt_tokens = len(prompt_tokens)
+        #    label = tokenized['labels'][i]
+
+        #    # Mask the prompt part (set to -100 for ignored labels during loss calculation)
+        #    label[:num_prompt_tokens] = [-100] * num_prompt_tokens
+        #    tokenized['labels'][i] = label
+
+        #tokenized["labels"] = labels
+        #return tokenized
 
 
     processed_train_dataset = hf_train_dataset.map(
@@ -610,10 +637,13 @@ def fine_tune_model(train_data, base_model_name, tokenizer, val_data=None, save_
     print("Setting up data loaders...")
 
     # ✅ Correct collator for supervised causal LM
-    data_collator = DataCollatorWithPadding(
-        tokenizer=tokenizer,
-        pad_to_multiple_of=8,
-    )
+    #data_collator = DataCollatorWithPadding(
+    #    tokenizer=tokenizer,
+    #    pad_to_multiple_of=8,
+    #)
+
+    # Use default data collator for consistency
+    data_collator = default_data_collator
 
     train_loader = DataLoader(
         processed_train_dataset,
@@ -633,6 +663,19 @@ def fine_tune_model(train_data, base_model_name, tokenizer, val_data=None, save_
 
     print("Initializing base model...")
     base_model = AutoModelForCausalLM.from_pretrained(base_model_name)
+    # CRITICAL: resize embeddings
+    base_model.resize_token_embeddings(len(tokenizer))
+
+    # Ensure model knows pad token
+    base_model.config.pad_token_id = tokenizer.pad_token_id
+
+    # DEBUG code
+    print("Tokenizer vocab size:", len(tokenizer))
+    print("Model vocab size:", base_model.config.vocab_size)
+    print("Pad token id:", tokenizer.pad_token_id)
+
+    batch = next(iter(train_loader))
+    print("Max input_id:", batch["input_ids"].max().item())  
 
     print("Adding LoRA...")
     lora_config = LoraConfig(
@@ -659,7 +702,7 @@ def fine_tune_model(train_data, base_model_name, tokenizer, val_data=None, save_
     )
 
     if val_loader is not None:
-        val_loader = accelerator.prepare(val_loader)
+        val_loader = accelerator.prepare(val_loader)  
 
     print("Starting fine-tuning...")
     for epoch in range(3):
@@ -731,7 +774,7 @@ def main():
     }
 
     # Hugging Face authentication token
-    huggingface_token = "sometoken"
+    huggingface_token = "my_hf_token"
 
     # Load the dataset
     data = pd.read_parquet("cellular_dataframe.parquet")
@@ -789,8 +832,8 @@ def main():
     ##model_name_or_path = base_model_name
 
     # Preprocess and fine-tune the model
-    tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neo-1.3B") # EleutherAI/gpt-neo-125M") #
-    model_name = fine_tune_model(train_data, "EleutherAI/gpt-neo-1.3B", tokenizer, val_data) # EleutherAI/gpt-neo-125M
+    tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neo-125M") # EleutherAI/gpt-neo-1.3B") # 
+    model_name = fine_tune_model(train_data, "EleutherAI/gpt-neo-125M", tokenizer, val_data) # EleutherAI/gpt-neo-125M
 
 
     try:
