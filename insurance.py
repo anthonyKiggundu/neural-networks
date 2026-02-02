@@ -7,7 +7,7 @@ import requests
 import pandas as pd
 from sklearn.model_selection import train_test_split  # Add this
 from torch import nn
-from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments, default_data_collator
+from transformers import AutoTokenizer, AutoModelForCausalLM, Trainer, TrainingArguments, default_data_collator, EarlyStoppingCallback
 from peft import LoraConfig, get_peft_model, TaskType
 from datasets import Dataset, DatasetDict  # Simplify creating and loading datasets
 from torchvision import models
@@ -535,7 +535,7 @@ from accelerate import Accelerator
 from peft import LoraConfig, get_peft_model, TaskType
 
 # --- Fine-Tuning ---
-def fine_tune_model(train_data, base_model_name, tokenizer, val_data=None, save_dir="./finetuned_model"):
+def fine_tune_model(train_data, base_model_name, tokenizer, val_data=None, save_dir="./finetuned_model", max_steps=100):
     """
     Fine-tune a base model with a training dataset using LoRA (Low-Rank Adaptation).
     Args:
@@ -544,6 +544,7 @@ def fine_tune_model(train_data, base_model_name, tokenizer, val_data=None, save_
         tokenizer: Tokenizer for the model.
         val_data: Pandas DataFrame containing the validation data (optional).
         save_dir: Directory to save the fine-tuned model.
+        max_steps: Maximum number of training steps.
     """
     
     accelerator = Accelerator()
@@ -557,7 +558,7 @@ def fine_tune_model(train_data, base_model_name, tokenizer, val_data=None, save_
     if tokenizer.pad_token is None:
         tokenizer.add_special_tokens({"pad_token": "<|pad|>"})
 
-    # ✅ CORRECT batched preprocessing
+    # batched preprocessing
     def preprocess_function(batch):
         prompts = batch["kpi_input"]
         targets = batch["kpi_description"]
@@ -636,7 +637,7 @@ def fine_tune_model(train_data, base_model_name, tokenizer, val_data=None, save_
 
     print("Setting up data loaders...")
 
-    # ✅ Correct collator for supervised causal LM
+    # Correct collator for supervised causal LM
     #data_collator = DataCollatorWithPadding(
     #    tokenizer=tokenizer,
     #    pad_to_multiple_of=8,
@@ -663,19 +664,19 @@ def fine_tune_model(train_data, base_model_name, tokenizer, val_data=None, save_
 
     print("Initializing base model...")
     base_model = AutoModelForCausalLM.from_pretrained(base_model_name)
-    # CRITICAL: resize embeddings
+    # resize embeddings
     base_model.resize_token_embeddings(len(tokenizer))
 
     # Ensure model knows pad token
     base_model.config.pad_token_id = tokenizer.pad_token_id
 
     # DEBUG code
-    print("Tokenizer vocab size:", len(tokenizer))
-    print("Model vocab size:", base_model.config.vocab_size)
-    print("Pad token id:", tokenizer.pad_token_id)
+    #print("Tokenizer vocab size:", len(tokenizer))
+    #print("Model vocab size:", base_model.config.vocab_size)
+    #print("Pad token id:", tokenizer.pad_token_id)
 
-    batch = next(iter(train_loader))
-    print("Max input_id:", batch["input_ids"].max().item())  
+    #batch = next(iter(train_loader))
+    #print("Max input_id:", batch["input_ids"].max().item())  
 
     print("Adding LoRA...")
     lora_config = LoraConfig(
@@ -701,9 +702,19 @@ def fine_tune_model(train_data, base_model_name, tokenizer, val_data=None, save_
         model, optimizer, train_loader
     )
 
+    early_stopping_callback = EarlyStoppingCallback(
+        early_stopping_patience=2,  # Stop after 2 epochs of no improvement.
+        early_stopping_threshold=0.002  # Stop when loss improvement is below this value.
+    )
+
+    # Adjusted epoch loop to use validation loss tracking
+    best_loss = float("inf")
+    early_stopping_triggered = False
+
     if val_loader is not None:
         val_loader = accelerator.prepare(val_loader)  
 
+    step_count = 0
     print("Starting fine-tuning...")
     for epoch in range(3):
         model.train()
@@ -719,10 +730,22 @@ def fine_tune_model(train_data, base_model_name, tokenizer, val_data=None, save_
 
             total_loss += loss.item()
 
-            if step % 10 == 0:
-                print(f"Epoch {epoch+1}, Step {step}, Loss {loss.item():.4f}")
+            #if step % 10 == 0:
+            #    print(f"Epoch {epoch+1}, Step {step}, Loss {loss.item():.4f}")
+            step_count += 1
+            if step_count % 10 == 0:  # Print updates every 10 steps
+                print(f"Epoch {epoch+1}, Step {step_count}, Loss {loss.item():.4f}")
 
-        print(f"Epoch {epoch+1} Loss: {total_loss:.4f}")
+            # Break loop after `max_steps` is reached
+            if step_count >= max_steps:
+                print(f"Reached max training steps: {max_steps}")
+                break
+
+        if step_count >= max_steps:
+            break  # Exit outer loop once max_steps is reached
+         
+        avg_train_loss = total_loss / len(train_loader)
+        print(f"Epoch {epoch+1} Loss: {total_loss:.4f} Average Training Loss: {avg_train_loss:.4f}")
 
         if val_loader is not None:
             model.eval()
@@ -731,15 +754,23 @@ def fine_tune_model(train_data, base_model_name, tokenizer, val_data=None, save_
                 for batch in val_loader:
                     outputs = model(**batch)
                     val_loss += outputs.loss.item()
+            
+            
             print(f"Validation Loss: {val_loss / len(val_loader):.4f}")
+            
+            avg_val_loss = val_loss / len(val_loader)
+            # Check for early stopping
+            if avg_val_loss < best_loss - 1e-4:  # Improvement threshold
+                best_loss = avg_val_loss
+                print(f"Validation loss improved to {avg_val_loss:.4f}")
+            else:
+                print("Early stopping triggered. No improvement in validation loss.")
+                early_stopping_triggered = True
 
-    #print("Saving fine-tuned model...")
-    #accelerator.wait_for_everyone()
-    #model.save_pretrained("./lora_finetuned_model", save_function=accelerator.save)
-    #tokenizer.save_pretrained("./lora_finetuned_tokenizer")
+        # Break loop if early stopping has been triggered.
+        if early_stopping_triggered:
+            break
 
-    #return "./lora_finetuned_model"
-    # Save Fine-Tuned Model
     save_path = f"{save_dir}/{base_model_name.replace('/', '_')}"
     print(f"Saving fine-tuned model to {save_path}...")
     accelerator.wait_for_everyone()
@@ -774,7 +805,7 @@ def main():
     }
 
     # Hugging Face authentication token
-    huggingface_token = "my_hf_token"
+    huggingface_token = "hf_some"
 
     # Load the dataset
     data = pd.read_parquet("cellular_dataframe.parquet")
