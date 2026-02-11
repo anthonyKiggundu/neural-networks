@@ -267,7 +267,7 @@ def calculate_risk_factors(
 
 
 
-def plot_reliability_diagram(y_true, prob_pred, n_bins=10):
+def generate_reliability_diagram(y_true, prob_pred, n_bins=10):
     # 1. Convert to NumPy arrays
     y_true = np.array(y_true)
     prob_pred = np.array(prob_pred)
@@ -425,6 +425,91 @@ def extended_visualize_results(time_span, aggregate_risks, epistemic_risks, stal
     # Use bbox_inches='tight' to ensure labels aren't cut off in the PDF
     plt.savefig("GIRAF_Simulation_Results.pdf", format='pdf', bbox_inches='tight', dpi=300)
     print("Plot successfully saved as GIRAF_Simulation_Results.pdf")
+    plt.show()
+
+
+def old_extended_visualize_results(time_seconds, aggregate_risks, epistemic_risks, staleness_risks, # time_steps,
+                               congestion_index, jitter, bt_true, bt_reported,
+                               ping_violations, jitter_violations, fraud_detected):
+
+    # 1. FIX THE DATA: Log-scale for the 'Exploding' Risk
+    # This ensures the Epistemic risk (small) and Staleness risk (huge) are both visible
+    log_aggregate = np.log10(np.array(aggregate_risks) + 1)
+    log_epistemic = np.log10(np.array(epistemic_risks) + 1)
+    log_staleness = np.log10(np.array(staleness_risks) + 1)
+
+    fig, axs = plt.subplots(5, 1, figsize=(14, 25), sharex=True) # Changed to 5 subplots
+    plt.subplots_adjust(hspace=0.2)
+
+    # --- PLOT 1: THE MOBILITY RISK PROFILE (Log-Scale) ---
+    # This shows the novelty of the Aggregate Risk Index
+    ##axs[0].plot(time_steps, log_aggregate, label="Total Risk ($R_t$)", color="red", linewidth=2)
+
+    axs[0].plot(time_seconds, log_aggregate, label="Total Risk ($R_t$)", color="red", linewidth=1)
+    axs[0].set_xlabel("Time (seconds)") # Label as seconds
+    axs[0].fill_between(time_seconds, log_aggregate, color="red", alpha=0.1)
+    axs[0].axhline(y=np.log10(45), color='black', linestyle='--', label="GaC Threshold")
+    # axs[0].set_ylabel("Risk Score ($\log_{10}$)")
+    axs[0].set_ylabel(r"Risk Score ($\log_{10}$)")
+    axs[0].set_title("GIRAF: Dynamic Risk Profile During Mobility Traversal")
+    axs[0].legend(loc="upper right")
+
+    # --- PLOT 2: RISK DECOMPOSITION (Stacked Log) ---
+    # NOW you will see the Epistemic risk because of the log scale
+    ##axs[1].fill_between(time_steps, 0, log_epistemic, label="Epistemic (Uncertainty)", color="purple", alpha=0.6)
+    ##axs[1].fill_between(time_steps, log_epistemic, log_epistemic + log_staleness,
+    # label="Staleness (Latency)", color="orange", alpha=0.6)
+
+    axs[1].fill_between(time_seconds, 0, log_epistemic, label="Epistemic (Uncertainty)", color="purple", alpha=0.6)
+    axs[1].fill_between(time_seconds, log_epistemic, log_epistemic + log_staleness,
+                        label="Staleness (Latency)", color="orange", alpha=0.6)
+    axs[1].set_ylabel("Risk Contribution")
+    axs[1].set_title("Verification-Staleness Trade-off Analysis")
+    axs[1].legend(loc="upper left")
+
+    # --- PLOT 3: ENVIRONMENTAL TELEMETRY (Dual Axis) ---
+    # This explains 'Why' the risk is changing as the device moves
+    ax3_twin = axs[2].twinx()
+    ##lns1 = axs[2].plot(time_steps, jitter, label="Jitter (ms)", color="blue", alpha=0.6)
+    ##lns2 = ax3_twin.plot(time_steps, congestion_index, label="Congestion", color="brown", linewidth=2)
+
+    lns1 = axs[2].plot(time_seconds, jitter, label="Jitter (ms)", color="blue", alpha=0.6)
+    lns2 = ax3_twin.plot(time_seconds, congestion_index, label="Congestion", color="brown", linewidth=2)
+    axs[2].set_ylabel("Network Flux")
+    ax3_twin.set_ylabel("Traffic Factor")
+    axs[2].set_title("Environmental Context: Congestion vs. Jitter")
+    # Merge legends
+    lns = lns1 + lns2
+    labs = [l.get_label() for l in lns]
+    axs[2].legend(lns, labs, loc="upper right")
+
+    # --- PLOT 4: TRUST & FRAUD INDICATORS ---
+    # Replaces the boring Plot 4 with a "Trust Score" + Fraud Spikes
+    # Trust Score is 100 - Normalized Risk
+    trust_score = 100 * (1 - (np.array(aggregate_risks) / (max(aggregate_risks) + 1)))
+    ##axs[3].plot(time_steps, trust_score, label="System Trust Score", color="green")
+    ##axs[3].step(time_steps, np.array(fraud_detected)*50, label="Fraud Detected", color="red", where='post')
+
+    axs[3].plot(time_seconds, trust_score, label="System Trust Score", color="green")
+    axs[3].step(time_seconds, np.array(fraud_detected)*50, label="Fraud Detected", color="red", where='post')
+    axs[3].set_ylim(0, 110)
+    axs[3].set_ylabel("Score / Indicator")
+    axs[3].set_xlabel("Decision Epoch ($t$)")
+    axs[3].set_title("Governance Plane: Real-time Trust Modulation")
+    axs[3].legend(loc="upper right")
+
+    # NEW SUBPLOT: Confidence Gap (Dissonance)
+    # This shows the "Gap" we are talking about in the paper
+    gap = np.abs(np.array(bt_true) - np.array(bt_reported))
+    axs[4].plot(time_seconds, gap, label='Epistemic Gap ($r_{epi}$)', color='purple')
+    axs[4].axhline(y=0.15, color='r', linestyle='--', label='Trust Threshold')
+    axs[4].set_title("Real-time Confidence Dissonance (GIRAF Metric)")
+    axs[4].set_ylabel("Error Magnitude")
+    axs[4].set_xlabel("Decision Epoch ($t$)") # Add x-label for the new subplot
+    axs[4].legend()
+
+    plt.tight_layout()
+    plt.savefig("extended_simulation_results.png")
     plt.show()
 
 
@@ -709,6 +794,23 @@ def calculate_confidence_gap(model, tokenizer, prompt, ground_truth_val):
     return r_epi, reported_conf
 
 
+def old_get_calibration_curve(confidences, labels, n_bins=10):
+    bin_boundaries = np.linspace(0.5, 1.0, n_bins + 1)
+    bin_lowers = bin_boundaries[:-1]
+    bin_uppers = bin_boundaries[1:]
+
+    accuracies = []
+    conf_means = []
+
+    for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
+        in_bin = (confidences > bin_lower) & (confidences <= bin_upper)
+        if np.sum(in_bin) > 0:
+            accuracies.append(np.mean(labels[in_bin]))
+            conf_means.append(np.mean(confidences[in_bin]))
+
+    return np.array(conf_means), np.array(accuracies)
+
+
 def get_calibration_curve(labels, predictions, n_bins=10):
     # Convert to numpy arrays for indexing
     labels = np.array(labels)
@@ -734,6 +836,21 @@ def get_calibration_curve(labels, predictions, n_bins=10):
             confidences.append(np.mean(predictions[in_bin]))
 
     return np.array(accuracies), np.array(confidences)
+
+
+def initialize_telemetry():
+    """Returns a dictionary of empty lists for all 6G/GIRAF metrics."""
+    return {
+        'time': [], 'risk': [], 'lv': [], 'gap': [],
+        'bt_true': [], 'bt_rep': [], 'jitter': [],
+        'congestion': [], 'epi_risk': [], 'staleness_risk': []
+    }
+
+def record_telemetry(log, **kwargs):
+    """Appends data to telemetry logs, ensuring synchronization."""
+    for key, value in kwargs.items():
+        if key in log:
+            log[key].append(value)
 
 
 
@@ -820,30 +937,35 @@ def old_plot_reliability_diagram(y_true, prob_pred, n_bins=10):
 
 
 def plot_risk_distribution_by_traffic_jam_factor(congestion_data, epistemic_risks, staleness_risks):
-    categories = ['Low Congestion', 'Medium Congestion', 'High Congestion']
+    # Align and Categorize
+    min_len = min(len(congestion_data), len(epistemic_risks))
+    tj = np.array(congestion_data[:min_len])
+    er = np.array(epistemic_risks[:min_len])
+    sr = np.array(staleness_risks[:min_len])
+
+    # Binning logic
+    low = tj <= 3
+    med = (tj > 3) & (tj <= 7)
+    high = tj > 7
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
 
-    def get_stats(risk_list, congestion_vals):
-        # Logic to bin risks based on congestion categories
-        # ... (Assuming helper logic to group risks by low/med/high) ...
-        return [np.median(risk_list), np.percentile(risk_list, 90), np.max(risk_list)]
+    # Plot Epistemic (Linear Scale)
+    ax1.bar(['Low', 'Med', 'High'], 
+            [np.mean(er[low]) if any(low) else 0, 
+             np.mean(er[med]) if any(med) else 0, 
+             np.mean(er[high]) if any(high) else 0], color='purple')
+    ax1.set_title("Epistemic Risk by Congestion")
 
-    # Plot Epistemic Risk (Low magnitude: ~0.1 to 10)
-    ax1.set_title("Epistemic Risk Distribution")
-    # Plotting code here...
-    ax1.set_ylabel("Epistemic Risk Value")
-
-    # Plot Staleness Risk (High magnitude: ~1,000 to 70,000)
-    ax2.set_title("Staleness Risk Distribution")
-    # Plotting code here...
-    ax2.set_yscale('log') # Log scale is mandatory here
-    ax2.set_ylabel("Staleness Risk Value (Log Scale)")
-
-    plt.suptitle("Risk Distribution by Traffic Jam Factor")
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plt.savefig("risk_distribution_by_congestion.png")
-    plt.show()
+    # Plot Staleness (Log Scale - Crucial for high values)
+    ax2.bar(['Low', 'Med', 'High'], 
+            [np.mean(sr[low]) if any(low) else 0, 
+             np.mean(sr[med]) if any(med) else 0, 
+             np.mean(sr[high]) if any(high) else 0], color='gold')
+    ax2.set_yscale('log')
+    ax2.set_title("Staleness Risk (Log Scale)")
+    
+    plt.savefig("risk_distribution.pdf", format='pdf', bbox_inches='tight')
 
 
 def old_plot_risk_distribution_by_traffic_jam_factor(
@@ -937,6 +1059,53 @@ def plot_verification_staleness_dist(lv_history, smt_depths, sla_deadline=1.0):
     plt.savefig("verified_latency_vs_SMTdepth.png")
     plt.show()
 
+def iold_plot_verification_staleness_dist(lv_history, smt_depth_history, sla_deadline=60):
+    """
+    Uses real simulation telemetry to show the distribution of
+    Verification Latency (Lv) across different SMT Depths.
+    """
+    # Create a DataFrame from the actual simulation logs
+    df = pd.DataFrame({
+        'Latency': lv_history,
+        'SMT_Depth': smt_depth_history
+    })
+
+    plt.figure(figsize=(10, 6))
+
+    # 1. Boxplot of actual data
+    sns.boxplot(x='SMT_Depth', y='Latency', data=df, color='skyblue',
+                width=0.5, showfliers=False, medianprops={'color': 'black', 'linewidth': 2})
+
+    # 2. Overlay 90th percentile and Max for each unique depth found in the logs
+    unique_depths = sorted(df['SMT_Depth'].unique())
+    for i, depth in enumerate(unique_depths):
+        subset = df[df['SMT_Depth'] == depth]['Latency']
+        p90 = subset.quantile(0.9)
+        pmax = subset.max()
+
+        plt.plot(i, p90, 'r^', markersize=8, label='90th Percentile' if i == 0 else "")
+        plt.plot(i, pmax, 'rx', markersize=8, label='Maximum' if i == 0 else "")
+
+
+    plt.xlabel(r"SMT Verification Depth ($\Phi$)", fontsize=12)
+
+    # 3. SLA Deadline
+    plt.axhline(y=sla_deadline, color='darkred', linestyle='--',
+            label=fr'SLA Deadline ($\Delta t_{{req}}$ = {sla_deadline}ms)')
+
+    plt.title("Empirical Verification Latency ($L_v$) vs. SMT Depth", fontsize=14)
+    plt.xlabel(r"SMT Verification Depth ($\Phi$)", fontsize=12)
+    plt.ylabel("Latency ($L_v$) [ms]", fontsize=12)
+    plt.legend(loc='upper left')
+    plt.grid(axis='y', linestyle=':', alpha=0.7)
+
+    # Shade the 'Staleness Risk Zone'
+    plt.fill_between([-0.5, len(unique_depths)-0.5], sla_deadline, plt.ylim()[1],
+                     color='red', alpha=0.05)
+
+    plt.tight_layout()
+    plt.savefig("real_verification_staleness_dist.png", dpi=300)
+    plt.show()
 
 
 # --- Main Pipeline ---
@@ -964,7 +1133,7 @@ def main():
     accuracy_history = []     # To store binary success (1 if accurate, 0 if not)
 
     # Hugging Face authentication token
-    huggingface_token = "hf_toekn"
+    huggingface_token = "hf_tokem"
 
     # Load the dataset
     data = pd.read_parquet("cellular_dataframe.parquet")
@@ -1121,6 +1290,10 @@ def main():
     all_labels = []
     all_preds = []
 
+    # Constants for the mathematical definitions
+    LAMBDA_SENSITIVITY = 0.25
+    TRUST_THRESHOLD = 0.15
+
     # Stream KPI data from the test dataset and iterate
     for step, kpis in enumerate(stream_kpis_from_dataset(test_data, feed_interval=0.2)): #stream_kpis_real_time(150, feed_interval=0.1)): # NOTE: Changed back to test_data for continuity
 
@@ -1132,9 +1305,14 @@ def main():
         # We derive the 'True Confidence' from the jitter.
         # As jitter increases, the 'Ground Truth' certainty decreases.
         base_confidence = 0.95
-        jitter_val = kpis.get('jitter', 0)
+        snr_val = kpis.get('snr', 20)
+        jitter_val = kpis.get('jitter', 0.5)
         jitter_penalty = kpis.get('jitter', 0) / 100.0
-        current_bt_true = max(0.1, base_confidence - jitter_penalty)
+        # current_bt_true = max(0.1, base_confidence - jitter_penalty)
+
+        # Dynamic BT calculation based on telemetry
+        # Formula: BT = exp(-lambda * (sigma_jitter / SNR))
+        current_bt_true = np.exp(-LAMBDA_SENSITIVITY * (jitter_val / max(1, snr_val)))
 
         # 1. STORE TRUE VALUE
         bt_true_history.append(current_bt_true)
@@ -1175,12 +1353,26 @@ def main():
                 # Placeholder for actual prediction_matches_truth logic
                 # Use kpis['kpi_description'] as a placeholder for ground truth value needed by calculate_confidence_gap
                 prediction_matches_truth = True  # Define here for calculate_confidence_gap
-                r_epi, reported_conf = calculate_confidence_gap(model, tokenizer, prompt, kpis['kpi_description'])
-                step_confidences.append(reported_conf)
+                try:
+                    r_epi, reported_conf = calculate_confidence_gap(model, tokenizer, prompt, kpis['kpi_description'])
+                    step_confidences.append(reported_conf)
+                except Exception as e:
+                    print(f"Inference crash at step {step}: {e}")
+                    step_confidences.append(0.5) # Safe fallback
 
-                # 3. STORE REPORTED VALUE (Syncs with bt_true_history)
-                bt_reported_history.append(reported_conf)
-                accuracy_history.append(1 if r_epi < 0.15 else 0)
+                # 3. SYNCHRONIZATION: Record exactly ONE value per step
+                avg_reported_conf = np.mean(step_confidences)
+
+                bt_true_history.append(current_bt_true)
+                bt_reported_history.append(avg_reported_conf)
+    
+                # 4. Success Criteria (For Reliability Diagram)
+                # Success = High Temporal Reliability (Latency) AND High Epistemic Reliability (Dissonance)
+                is_timely = lv_history[-1] <= SLA_DEADLINE if lv_history else True
+                is_reliable = np.abs(current_bt_true - avg_reported_conf) < TRUST_THRESHOLD
+    
+                actual_success = 1 if (is_timely and is_reliable) else 0
+                accuracy_history.append(actual_success)
 
                 # 2. Use this in your real-time risk calculation
                 # Override the kpis dict so calculate_risk_factors sees the actual LLM uncertainty
@@ -1207,7 +1399,7 @@ def main():
 
                 # --- C. SYNCHRONIZED APPENDING (Prevents ValueError) ---
                 # Every list gets exactly one append per step
-                bt_true_history.append(current_bt_true)
+                # bt_true_history.append(current_bt_true)
                 # bt_reported_history.append(reported_conf)
                 jitter_history.append(jitter_val)
                 congestion_index.append(kpis.get("Traffic Jam Factor", 0))
@@ -1239,18 +1431,18 @@ def main():
         # Option B: Success is based on avoiding a Ping Violation
         # --- Define 6G-V2X Success Criteria ---
         # 1. Define Environmental Sensitivity
-        LAMBDA_SENSITIVITY = 0.25 
+        #LAMBDA_SENSITIVITY = 0.25 
 
         # 2. Inside the loop, calculate BT dynamically
         # BT will vary between 0 and 1 based on network conditions
-        bt_true_val = np.exp(-LAMBDA_SENSITIVITY * (jitter / max(1, snr)))
-        bt_true_history.append(bt_true_val)
+        #bt_true_val = np.exp(-LAMBDA_SENSITIVITY * (jitter / max(1, snr)))
+        #bt_true_history.append(bt_true_val)
 
         # 3. SUCCESS DEFINITION (Must vary to avoid the "One Class" error)
         # A success is when the agent's reported confidence (BR) 
         # is within 15% of the objective ground truth (BT)
-        actual_success = 1 if np.abs(bt_true_val - reported_conf) < 0.15 else 0
-        all_labels.append(actual_success)
+        #actual_success = 1 if np.abs(bt_true_val - reported_conf) < 0.15 else 0
+        #all_labels.append(actual_success)
 
         #actual_success = 1 if r_epi < 0.15 else 0
         # FIX: Append only the average or the first agent's report to keep length at 150
@@ -1361,7 +1553,7 @@ def main():
 
     # 1. Governance Effectiveness
     # mean_risk = np.mean(risk_arr)
-    mean_risk = risk_array[~np.isnan(risk_array)]
+    mean_risk = risk_array[~np.isnan(risk_arr)]
     peak_risk = np.max(risk_arr)
     mitigation_ratio = (np.sum(mitigation_arr) / len(mitigation_arr)) * 100
 
