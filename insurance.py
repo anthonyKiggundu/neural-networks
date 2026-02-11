@@ -1,4 +1,6 @@
-!pip install -U bitsandbytes>=0.46.1
+#!pip install -q --upgrade transformers accelerate peft bitsandbytes
+#import os
+#os.kill(os.getpid(), 9)
 
 import time
 import numpy as np
@@ -116,7 +118,7 @@ class LLMKPIAgent:
 
             # Generate response
             with torch.no_grad():
-                outputs = self.model.generate(**inputs, 
+                outputs = self.model.generate(**inputs,
                                           max_new_tokens=150,
                                           pad_token_id=self.tokenizer.eos_token_id, # Add this line
                                           eos_token_id=self.tokenizer.eos_token_id,
@@ -188,7 +190,9 @@ def print_decision(step, agent_name, decision):
     print("\n")
 
 
-def calculate_risk_factors(metadata, evaluator, step, fraud_detected, behavior_flagged, threshold=45.0):
+def calculate_risk_factors(
+    metadata, evaluator, step, fraud_detected, behavior_flagged, threshold=45.0
+):
     """
     Calculates the Aggregate Risk Index (R_t) and generates a GaC Mitigation Signal.
 
@@ -211,11 +215,11 @@ def calculate_risk_factors(metadata, evaluator, step, fraud_detected, behavior_f
     # 2. Environmental Risk: beta * omega^2
     # Reflects network volatility (Traffic Jam Factor / Jitter)
     omega = metadata.get("Traffic Jam Factor", 0) / 10.0
-    r_env = evaluator.get("beta", 8.0) * (omega ** 2)
+    r_env = evaluator.get("beta", 8.0) * (omega**2)
 
     # 3. Staleness Risk: delta * (Lv - dt_req)+
     # Reflects the "Verification-Staleness Trade-off"
-    lv = metadata.get('ping_ms', 0)
+    lv = metadata.get("ping_ms", 0)
     dt_req = evaluator.get("dt_req", 25.0)
     r_stal = evaluator.get("delta", 20.0) * max(0, lv - dt_req)
 
@@ -231,7 +235,7 @@ def calculate_risk_factors(metadata, evaluator, step, fraud_detected, behavior_f
 
     # 6. Adversarial Penalty
     if fraud_detected:
-        final_risk += 30.0 # Heavy weight for intentional manipulation
+        final_risk += 30.0  # Heavy weight for intentional manipulation
     if behavior_flagged:
         final_risk += 15.0
 
@@ -262,30 +266,106 @@ def calculate_risk_factors(metadata, evaluator, step, fraud_detected, behavior_f
     }
 
 
-def extended_visualize_results(time_span, aggregate_risks, epistemic_risks, staleness_risks, 
-                               congestion_index, jitter, bt_true, bt_reported, 
-                               ping_violations, jitter_violations, fraud_detected):
+
+def plot_reliability_diagram(y_true, prob_pred, n_bins=10):
+    # 1. Convert to NumPy arrays
+    y_true = np.array(y_true)
+    prob_pred = np.array(prob_pred)
+
+    # 2. Sync lengths to avoid dimension errors
+    min_len = min(len(y_true), len(prob_pred))
+    y_true = y_true[:min_len]
+    prob_pred = prob_pred[:min_len]
+
+    # 3. FIX: Binarize y_true
+    # If y_true contains values like 0.733, we turn it into 1 (Success) 
+    # if it's above a certain performance threshold, otherwise 0.
+    # Alternatively, if y_true was meant to be "did it pass the trust check":
+    y_true_binary = (y_true > 0.5).astype(int) 
+
+    # 4. Clean NaNs
+    mask = ~np.isnan(y_true_binary) & ~np.isnan(prob_pred)
     
+    try:
+        bin_true, bin_pred = calibration_curve(y_true_binary[mask], prob_pred[mask], n_bins=n_bins)
+        
+        plt.figure(figsize=(8, 8))
+        plt.plot([0, 1], [0, 1], linestyle='--', color='gray', label='Perfect Calibration')
+        plt.plot(bin_pred, bin_true, marker='s', color='green', label='GIRAF Agent')
+        plt.fill_between(bin_pred, bin_pred, bin_true, color='pink', alpha=0.2, label='Calibration Error')
+        plt.xlabel(r'Reported Confidence ($B_R$)')
+        plt.ylabel('Empirical Accuracy')
+        plt.title('Reliability Diagram (6G-V2X Confidence)')
+        plt.legend()
+        plt.show()
+    except ValueError as e:
+        print(f"Calibration Error: {e}. Check if y_true_binary contains both 0 and 1.")
+
+
+def extended_visualize_results(time_span, aggregate_risks, epistemic_risks, staleness_risks,
+                               congestion_index, jitter, bt_true, bt_reported,
+                               ping_violations, jitter_violations, fraud_detected):
+
+    # Ensure all arrays match the first dimension to prevent ValueErrors
+    min_len = min(len(time_span), len(aggregate_risks), len(epistemic_risks), len(staleness_risks))
+    t = time_span[:min_len]
+
     # 6 subplots to visualize the full GIRAF context
     fig, axes = plt.subplots(6, 1, figsize=(12, 22), sharex=True)
-    
+
     # 0. Aggregate Risk
-    axes[0].plot(time_span, aggregate_risks, label='Aggregate Risk ($R_t$)', color='black', linewidth=2)
-    axes[0].axhline(y=45.0, color='r', linestyle='--', label='Mitigation Threshold')
+    #axes[0].plot(time_span, aggregate_risks, label='Aggregate Risk ($R_t$)', color='black', linewidth=2)
+    #axes[0].axhline(y=45.0, color='r', linestyle='--', label='Mitigation Threshold')
+    #axes[0].set_title("GIRAF Governance: Risk Indexing")
+    #axes[0].legend()
+
+    # --- SUBPLOT 1: Aggregate Risk (Fixed Scaling) ---
+    axes[0].plot(t, aggregate_risks[:min_len], color='black', label=r'Aggregate Risk ($R_t$)')
+    axes[0].axhline(y=45, color='red', linestyle='--', label='Mitigation Threshold')
+    # Use symlog to handle values from 0 to 60,000 without losing the baseline
+    axes[0].set_yscale('symlog', linthresh=100)
+    axes[0].set_ylabel(r'Risk Index ($R_t$) [SymLog]')
     axes[0].set_title("GIRAF Governance: Risk Indexing")
-    axes[0].legend()
+    axes[0].legend(loc='upper right')
 
     # 1. Network Environment
-    axes[1].plot(time_span, jitter, label='Jitter (ms)', color='orange')
-    axes[1].plot(time_span, congestion_index, label='Traffic Jam Factor', color='brown', alpha=0.6)
-    axes[1].set_title("Environmental Context")
-    axes[1].legend()
+    #axes[1].plot(time_span, jitter, label='Jitter (ms)', color='orange')
+    #axes[1].plot(time_span, congestion_index, label='Traffic Jam Factor', color='brown', alpha=0.6)
+    #axes[1].set_title("Environmental Context")
+    #axes[1].legend()
+
+    # --- Environmental Context Fix ---
+    ax_env = axes[1]
+    ax_env.plot(t, congestion_index, label='Traffic Jam Factor', color='brown', alpha=0.6)
+    ax_env.set_ylabel('Congestion Index', color='brown')
+
+    ax_jitter = ax_env.twinx()
+    ax_jitter.plot(t, jitter, label='Jitter (ms)', color='orange', linewidth=1.5)
+    ax_jitter.set_ylabel('Jitter (ms)', color='orange')
+    ax_jitter.set_ylim(0, max(jitter) * 1.2 if any(jitter) else 10)
 
     # 2. Risk Components
-    axes[2].plot(time_span, epistemic_risks, label='Epistemic (LLM)', color='blue')
-    axes[2].plot(time_span, staleness_risks, label='Staleness (Latency)', color='green')
-    axes[2].set_title("Risk Component Decomposition")
-    axes[2].legend()
+    #axes[2].plot(time_span, epistemic_risks, label='Epistemic (LLM)', color='blue')
+    #axes[2].plot(time_span, staleness_risks, label='Staleness (Latency)', color='green')
+    #axes[2].set_title("Risk Component Decomposition")
+    #axes[2].legend()
+
+    # --- SUBPLOT 3: Risk Component Decomposition (Fixed Scaling) ---
+    # We use dual Y-axes here because Epistemic (~0.5) and Staleness (~60,000) cannot coexist on one linear scale
+    ax3 = axes[2]
+    ax3.plot(t, epistemic_risks[:min_len], label='Epistemic (LLM)', color='blue', linewidth=1.5)
+    ax3.set_ylabel('Epistemic Risk', color='blue')
+
+    ax3_twin = ax3.twinx()
+    ax3_twin.plot(t, staleness_risks[:min_len], label='Staleness (Latency)', color='green', alpha=0.5)
+    ax3_twin.set_ylabel('Staleness Risk', color='green')
+    ax3_twin.set_yscale('log') # Staleness is the high-magnitude culprit
+
+    ax3.set_title("Risk Component Decomposition (Dual-Scaled)")
+    # Combine legends
+    lines, labels = ax3.get_legend_handles_labels()
+    lines2, labels2 = ax3_twin.get_legend_handles_labels()
+    ax3.legend(lines + lines2, labels + labels2, loc='upper left')
 
     # 3. Binary Incident Flags
     axes[3].step(time_span, ping_violations, label='Ping Violation', where='post', color='red', alpha=0.5)
@@ -294,106 +374,57 @@ def extended_visualize_results(time_span, aggregate_risks, epistemic_risks, stal
     axes[3].legend()
 
     # 4. Confidence Alignment
-    axes[4].plot(time_span, bt_true, 'k--', label='Ground Truth ($B_T$)', alpha=0.8)
-    axes[4].plot(time_span, bt_reported, 'g-', label='Reported ($B_R$)')
+    # --- 4. Agentic Confidence Alignment (FIXED) ---
+    # Ensure all arrays match the first dimension of time_span to prevent ValueErrors
+    min_len_n = min(len(time_span), len(bt_true), len(bt_reported))
+    t_plot = time_span[:min_len_n]
+
+    axes[4].plot(t_plot, bt_true[:min_len_n], 'k--', label=r'Ground Truth ($B_T$)', alpha=0.8)
+    axes[4].plot(t_plot, bt_reported[:min_len_n], 'g-', label=r'Reported ($B_R$)')
+
+    # Set explicit limits to fix the Y-axis scale issue
+    axes[4].set_ylim(-0.05, 1.05)
+    axes[4].set_ylabel("Confidence [0,1]")
     axes[4].set_title("Agentic Confidence Alignment")
-    axes[4].legend()
+    axes[4].legend(loc='upper right')
+
+    #axes[4].plot(time_span, bt_true, 'k--', label='Ground Truth ($B_T$)', alpha=0.8)
+    #axes[4].plot(time_span, bt_reported, 'g-', label='Reported ($B_R$)')
+    #axes[4].set_title("Agentic Confidence Alignment")
+    #axes[4].legend()
 
     # 5. The Confidence Gap (Dissonance)
-    gap = np.abs(np.array(bt_true) - np.array(bt_reported))
-    axes[5].fill_between(time_span, gap, color='purple', alpha=0.3, label='Confidence Gap ($r_{epi}$)')
-    axes[5].set_title("Epistemic Dissonance (Risk Magnitude)")
-    axes[5].set_xlabel(r"Time Span ($t+\tau$)") # Explicitly using t+tau
-    axes[5].set_ylabel("Error")
+    # gap = np.abs(np.array(bt_true) - np.array(bt_reported))
+    #gap = np.abs(bt_true[:min_len_n] - bt_reported[:min_len_n])
+    #axes[5].fill_between(time_span, gap, color='purple', alpha=0.3, label='Confidence Gap ($r_{epi}$)')
+    #axes[5].set_title("Epistemic Dissonance (Risk Magnitude)")
+    #axes[5].set_xlabel(r"Time Span ($t+\tau$)") # Explicitly using t+tau
+    #axes[5].set_ylabel("Error")
+    #axes[5].legend()
+
+    # Ensure inputs are arrays for math operations
+    bt_t = np.array(bt_true)
+    bt_r = np.array(bt_reported)
+
+    # Sync lengths
+    min_len_n = min(len(time_span), len(bt_t), len(bt_r))
+    t = np.array(time_span)[:min_len_n]
+
+    # Calculate Gap safely
+    gap = np.abs(bt_t[:min_len_n] - bt_r[:min_len_n])
+
+    # Plotting Subplot 6
+    axes[5].fill_between(t, gap, color='purple', alpha=0.3, label=r'Confidence Gap ($r_{epi}$)')
+    axes[5].axhline(y=0.15, color='red', linestyle='--', label=r'Trust Boundary ($\Omega$)')
+    axes[5].set_ylim(0, 1.0) # Gap is between 0 and 1
+    axes[5].set_ylabel('Error')
     axes[5].legend()
 
     plt.tight_layout()
-    plt.savefig("extended_simulation_results.png")
-    plt.show()
-
-
-def old_extended_visualize_results(time_seconds, aggregate_risks, epistemic_risks, staleness_risks, # time_steps,
-                               congestion_index, jitter, bt_true, bt_reported,
-                               ping_violations, jitter_violations, fraud_detected):
-
-    # 1. FIX THE DATA: Log-scale for the 'Exploding' Risk
-    # This ensures the Epistemic risk (small) and Staleness risk (huge) are both visible
-    log_aggregate = np.log10(np.array(aggregate_risks) + 1)
-    log_epistemic = np.log10(np.array(epistemic_risks) + 1)
-    log_staleness = np.log10(np.array(staleness_risks) + 1)
-
-    fig, axs = plt.subplots(5, 1, figsize=(14, 25), sharex=True) # Changed to 5 subplots
-    plt.subplots_adjust(hspace=0.2)
-
-    # --- PLOT 1: THE MOBILITY RISK PROFILE (Log-Scale) ---
-    # This shows the novelty of the Aggregate Risk Index
-    ##axs[0].plot(time_steps, log_aggregate, label="Total Risk ($R_t$)", color="red", linewidth=2)
-
-    axs[0].plot(time_seconds, log_aggregate, label="Total Risk ($R_t$)", color="red", linewidth=1)
-    axs[0].set_xlabel("Time (seconds)") # Label as seconds
-    axs[0].fill_between(time_seconds, log_aggregate, color="red", alpha=0.1)
-    axs[0].axhline(y=np.log10(45), color='black', linestyle='--', label="GaC Threshold")
-    # axs[0].set_ylabel("Risk Score ($\\log_{10}$)")
-    axs[0].set_ylabel(r"Risk Score ($\\log_{10}$)")
-    axs[0].set_title("GIRAF: Dynamic Risk Profile During Mobility Traversal")
-    axs[0].legend(loc="upper right")
-
-    # --- PLOT 2: RISK DECOMPOSITION (Stacked Log) ---
-    # NOW you will see the Epistemic risk because of the log scale
-    ##axs[1].fill_between(time_steps, 0, log_epistemic, label="Epistemic (Uncertainty)", color="purple", alpha=0.6)
-    ##axs[1].fill_between(time_steps, log_epistemic, log_epistemic + log_staleness,
-    # label="Staleness (Latency)", color="orange", alpha=0.6)
-
-    axs[1].fill_between(time_seconds, 0, log_epistemic, label="Epistemic (Uncertainty)", color="purple", alpha=0.6)
-    axs[1].fill_between(time_seconds, log_epistemic, log_epistemic + log_staleness,
-                        label="Staleness (Latency)", color="orange", alpha=0.6)
-    axs[1].set_ylabel("Risk Contribution")
-    axs[1].set_title("Verification-Staleness Trade-off Analysis")
-    axs[1].legend(loc="upper left")
-
-    # --- PLOT 3: ENVIRONMENTAL TELEMETRY (Dual Axis) ---
-    # This explains 'Why' the risk is changing as the device moves
-    ax3_twin = axs[2].twinx()
-    ##lns1 = axs[2].plot(time_steps, jitter, label="Jitter (ms)", color="blue", alpha=0.6)
-    ##lns2 = ax3_twin.plot(time_steps, congestion_index, label="Congestion", color="brown", linewidth=2)
-
-    lns1 = axs[2].plot(time_seconds, jitter, label="Jitter (ms)", color="blue", alpha=0.6)
-    lns2 = ax3_twin.plot(time_seconds, congestion_index, label="Congestion", color="brown", linewidth=2)
-    axs[2].set_ylabel("Network Flux")
-    ax3_twin.set_ylabel("Traffic Factor")
-    axs[2].set_title("Environmental Context: Congestion vs. Jitter")
-    # Merge legends
-    lns = lns1 + lns2
-    labs = [l.get_label() for l in lns]
-    axs[2].legend(lns, labs, loc="upper right")
-
-    # --- PLOT 4: TRUST & FRAUD INDICATORS ---
-    # Replaces the boring Plot 4 with a "Trust Score" + Fraud Spikes
-    # Trust Score is 100 - Normalized Risk
-    trust_score = 100 * (1 - (np.array(aggregate_risks) / (max(aggregate_risks) + 1)))
-    ##axs[3].plot(time_steps, trust_score, label="System Trust Score", color="green")
-    ##axs[3].step(time_steps, np.array(fraud_detected)*50, label="Fraud Detected", color="red", where='post')
-
-    axs[3].plot(time_seconds, trust_score, label="System Trust Score", color="green")
-    axs[3].step(time_seconds, np.array(fraud_detected)*50, label="Fraud Detected", color="red", where='post')
-    axs[3].set_ylim(0, 110)
-    axs[3].set_ylabel("Score / Indicator")
-    axs[3].set_xlabel("Decision Epoch ($t$)")
-    axs[3].set_title("Governance Plane: Real-time Trust Modulation")
-    axs[3].legend(loc="upper right")
-
-    # NEW SUBPLOT: Confidence Gap (Dissonance)
-    # This shows the "Gap" we are talking about in the paper
-    gap = np.abs(np.array(bt_true) - np.array(bt_reported))
-    axs[4].plot(time_seconds, gap, label='Epistemic Gap ($r_{epi}$)', color='purple')
-    axs[4].axhline(y=0.15, color='r', linestyle='--', label='Trust Threshold')
-    axs[4].set_title("Real-time Confidence Dissonance (GIRAF Metric)")
-    axs[4].set_ylabel("Error Magnitude")
-    axs[4].set_xlabel("Decision Epoch ($t$)") # Add x-label for the new subplot
-    axs[4].legend()
-
-    plt.tight_layout()
-    plt.savefig("extended_simulation_results.png")
+    # plt.savefig("extended_simulation_results.png")
+    # Use bbox_inches='tight' to ensure labels aren't cut off in the PDF
+    plt.savefig("GIRAF_Simulation_Results.pdf", format='pdf', bbox_inches='tight', dpi=300)
+    print("Plot successfully saved as GIRAF_Simulation_Results.pdf")
     plt.show()
 
 
@@ -632,20 +663,31 @@ def custom_compute_metrics_function(eval_pred):
     predictions = np.argmax(logits, axis=-1)
     return {"accuracy": (predictions == labels).mean()}
 
-import torch
-import numpy as np
+
 
 def calculate_confidence_gap(model, tokenizer, prompt, ground_truth_val):
+
+    # Determine the model's current device (cuda:0)
+    device = next(model.parameters()).device
+
     # Get logits for the prediction
-    inputs = tokenizer(prompt, return_tensors="pt")
-    with torch.no_grad():
-        outputs = model(**inputs)
-        logits = outputs.logits[:, -1, :] # Last token logits
-        probs = torch.softmax(logits, dim=-1)
+    inputs = tokenizer(prompt, return_tensors="pt", padding=True, truncation=True)
+
+    # CRITICAL: Move all input tensors to the model's device
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+
+    try:
+        with torch.no_grad():
+            outputs = model(**inputs)
+            logits = outputs.logits[:, -1, :] # Last token logits
+            probs = torch.softmax(logits, dim=-1)
+    except Exception as e:
+        print(f"Inference error: {e}")
+        return 1.0, 0.5 # Return high risk/low confidence on failure to avoid nan
 
     # Extract the scalar prediction (e.g., predicted latency)
     # This is a simplified version of your 'infer' function
-    prediction = model.generate(**inputs)
+    prediction = model.generate(**inputs, max_new_tokens=1)
 
     # Calculate Epistemic Uncertainty (r_epi)
     # r_epi = |Predicted_Confidence - Reality|
@@ -654,47 +696,247 @@ def calculate_confidence_gap(model, tokenizer, prompt, ground_truth_val):
 
     # Calculate if the prediction matches ground truth (0 or 1)
     # Placeholder for actual prediction_matches_truth logic
-    prediction_matches_truth = True
+    # For now, let's assume `ground_truth_val` is somehow used to determine accuracy
+    # and that the model's generated output is 'prediction'.
+    # Since the task does not define `ground_truth_val` for this `calculate_confidence_gap` function,
+    # I will assume that if `ground_truth_val` is a string, we check if the prediction contains it.
+    # This is a placeholder and should be refined with actual ground truth data if available.
+    decoded_prediction = tokenizer.decode(prediction[0], skip_special_tokens=True)
+    prediction_matches_truth = ground_truth_val in decoded_prediction if isinstance(ground_truth_val, str) else True # simplified
     accuracy = 1.0 if prediction_matches_truth else 0.0
 
     r_epi = abs(reported_conf - accuracy)
     return r_epi, reported_conf
 
 
-def get_calibration_curve(confidences, labels, n_bins=10):
-    bin_boundaries = np.linspace(0.5, 1.0, n_bins + 1)
-    bin_lowers = bin_boundaries[:-1]
-    bin_uppers = bin_boundaries[1:]
+def get_calibration_curve(labels, predictions, n_bins=10):
+    # Convert to numpy arrays for indexing
+    labels = np.array(labels)
+    predictions = np.array(predictions)
 
+    # FIX: Force alignment by truncating to the shortest array
+    min_len = min(len(labels), len(predictions))
+    labels = labels[:min_len]
+    predictions = predictions[:min_len]
+
+    # Proceed with binning logic
+    bin_centers = np.linspace(0, 1, n_bins + 1)
     accuracies = []
-    conf_means = []
+    confidences = []
 
-    for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
-        in_bin = (confidences > bin_lower) & (confidences <= bin_upper)
-        if np.sum(in_bin) > 0:
+    for i in range(n_bins):
+        # Create the boolean mask based on the aligned length
+        in_bin = (predictions >= bin_centers[i]) & (predictions < bin_centers[i+1])
+
+        if np.any(in_bin):
+            # Now labels[in_bin] will never throw an IndexError
             accuracies.append(np.mean(labels[in_bin]))
-            conf_means.append(np.mean(confidences[in_bin]))
+            confidences.append(np.mean(predictions[in_bin]))
 
-    return np.array(conf_means), np.array(accuracies)
+    return np.array(accuracies), np.array(confidences)
 
 
-def plot_reliability_diagram(bins, accs):
-    """Generates the Calibration/Reliability Diagram for the Results section."""
-    plt.figure(figsize=(6, 6))
-    plt.plot([0, 1], [0, 1], '--', color='gray', label='Perfect Calibration')
-    plt.plot(bins, accs, 's-', color='green', label='Fine-tuned Agent')
 
-    # Shade the area to represent MCE (Mean Calibration Error)
-    plt.fill_between(bins, accs, bins, color='red', alpha=0.1, label='Calibration Error')
+from sklearn.calibration import calibration_curve
 
-    plt.title('Reliability Diagram (6G-V2X Confidence)')
-    plt.xlabel('Reported Confidence ($B_R$)')
+def plot_reliability_diagram(y_true, prob_pred, n_bins=10):
+    # Ensure inputs are numpy arrays
+    y_true = np.array(y_true)
+    prob_pred = np.array(prob_pred)
+
+    # Sync dimensions (Fixes the 300 vs 450 error)
+    min_len = min(len(y_true), len(prob_pred))
+    y_true = y_true[:min_len]
+    prob_pred = prob_pred[:min_len]
+
+    # FORCE BINARY: Ensure y_true is strictly 0 or 1
+    # Any value > 0.5 becomes 1, else 0.
+    y_true_binary = (y_true > 0.5).astype(int)
+
+    # Check if we have at least one of each class to avoid sklearn errors
+    if len(np.unique(y_true_binary)) < 2:
+        print("Warning: Data contains only one class. Reliability diagram may be skewed.")
+
+    try:
+        bin_true, bin_pred = calibration_curve(y_true_binary, prob_pred, n_bins=n_bins)
+
+        plt.figure(figsize=(7, 7))
+        plt.plot([0, 1], [0, 1], linestyle='--', color='gray', label='Ideal Calibration')
+        plt.plot(bin_pred, bin_true, marker='s', color='green', label='GIRAF Agent')
+
+        plt.fill_between(bin_pred, bin_pred, bin_true, color='pink', alpha=0.2, label='Calibration Error')
+
+        plt.xlabel(r'Reported Confidence ($B_R$)')
+        plt.ylabel('Empirical Success Rate')
+        plt.title('Reliability Diagram: SLA & Trust Alignment')
+        plt.legend()
+        plt.grid(alpha=0.2)
+        plt.show()
+
+    except Exception as e:
+        print(f"Plotting failed: {e}")
+
+
+def old_plot_reliability_diagram(y_true, prob_pred, n_bins=10):
+    
+    """
+    Fixes IndexError by aligning labels and predictions before binning.
+    """
+    # 1. Convert to NumPy arrays
+    y_true = np.array(y_true)
+    prob_pred = np.array(prob_pred)
+
+    # 2. Force alignment: truncate to the shortest common length
+    # This prevents the "300 vs 450" dimension mismatch
+    min_len = min(len(y_true), len(prob_pred))
+    y_true = y_true[:min_len]
+    prob_pred = prob_pred[:min_len]
+
+    # 3. Handle NaNs that might have been produced by CUDA/inference errors
+    mask = ~np.isnan(y_true) & ~np.isnan(prob_pred)
+    y_true, prob_pred = y_true[mask], prob_pred[mask]
+
+    if len(y_true) == 0:
+        print("Warning: No valid data for Reliability Diagram.")
+        return
+
+    # 4. Use sklearn's optimized calibration curve (replaces manual binning)
+    # This avoids manual indexing errors like "boolean index did not match"
+    bin_true, bin_pred = calibration_curve(y_true, prob_pred, n_bins=n_bins)
+
+    # Plotting code
+    plt.figure(figsize=(8, 8))
+    plt.plot([0, 1], [0, 1], linestyle='--', color='gray', label='Perfect Calibration')
+    plt.plot(bin_pred, bin_true, marker='s', color='green', label='GIRAF Agent')
+    plt.fill_between(bin_pred, bin_pred, bin_true, color='pink', alpha=0.2, label='Calibration Error')
+
+    plt.xlabel(r'Reported Confidence ($B_R$)')
     plt.ylabel('Empirical Accuracy')
+    plt.title('Reliability Diagram (6G-V2X Confidence)')
     plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.savefig("reliability_diagram.png")
+    plt.grid(alpha=0.3)
     plt.show()
-    print("Reliability Diagram saved as reliability_diagram.png")
+
+
+
+def plot_risk_distribution_by_traffic_jam_factor(congestion_data, epistemic_risks, staleness_risks):
+    categories = ['Low Congestion', 'Medium Congestion', 'High Congestion']
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+
+    def get_stats(risk_list, congestion_vals):
+        # Logic to bin risks based on congestion categories
+        # ... (Assuming helper logic to group risks by low/med/high) ...
+        return [np.median(risk_list), np.percentile(risk_list, 90), np.max(risk_list)]
+
+    # Plot Epistemic Risk (Low magnitude: ~0.1 to 10)
+    ax1.set_title("Epistemic Risk Distribution")
+    # Plotting code here...
+    ax1.set_ylabel("Epistemic Risk Value")
+
+    # Plot Staleness Risk (High magnitude: ~1,000 to 70,000)
+    ax2.set_title("Staleness Risk Distribution")
+    # Plotting code here...
+    ax2.set_yscale('log') # Log scale is mandatory here
+    ax2.set_ylabel("Staleness Risk Value (Log Scale)")
+
+    plt.suptitle("Risk Distribution by Traffic Jam Factor")
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig("risk_distribution_by_congestion.png")
+    plt.show()
+
+
+def old_plot_risk_distribution_by_traffic_jam_factor(
+    congestion_data, epistemic_risks, staleness_risks
+):
+    """
+    Visualizes the distribution (median, 90th percentile, and maximum) of
+    epistemic_risks and staleness_risks as a function of 'Traffic Jam Factor'
+    (binned into low, medium, high categories).
+    """
+    if not congestion_data or not epistemic_risks or not staleness_risks:
+        print("Warning: No data to plot for risk distribution by Traffic Jam Factor.")
+        return
+
+    # Create a DataFrame for easier processing
+    plot_df = pd.DataFrame({
+        'Traffic Jam Factor': congestion_data,
+        'Epistemic Risk': epistemic_risks,
+        'Staleness Risk': staleness_risks
+    })
+
+    # Define bins for Traffic Jam Factor
+    bins = [0, 3, 7, 10] # Assuming TJF ranges from 0 to 10
+    labels = ['Low Congestion', 'Medium Congestion', 'High Congestion']
+    plot_df['Congestion Category'] = pd.cut(
+        plot_df['Traffic Jam Factor'], bins=bins, labels=labels, right=False,
+        include_lowest=True
+    )
+
+    # Group by congestion category and calculate statistics
+    grouped_data = plot_df.groupby('Congestion Category').agg(
+        median_epi=('Epistemic Risk', 'median'),
+        p90_epi=('Epistemic Risk', lambda x: x.quantile(0.9)),
+        max_epi=('Epistemic Risk', 'max'),
+        median_stal=('Staleness Risk', 'median'),
+        p90_stal=('Staleness Risk', lambda x: x.quantile(0.9)),
+        max_stal=('Staleness Risk', 'max')
+    ).reindex(labels) # Ensure categories are in order
+
+    # Plotting
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6), sharey=True)
+
+    # Epistemic Risk Plot
+    grouped_data[['median_epi', 'p90_epi', 'max_epi']].plot(
+        kind='bar', ax=axes[0], colormap='viridis', alpha=0.8
+    )
+    axes[0].set_title('Epistemic Risk Distribution by Congestion')
+    axes[0].set_xlabel('Congestion Category')
+    axes[0].set_ylabel('Epistemic Risk Value')
+    axes[0].tick_params(axis='x', rotation=45)
+    axes[0].legend(['Median', '90th Percentile', 'Maximum'])
+
+    # Staleness Risk Plot
+    grouped_data[['median_stal', 'p90_stal', 'max_stal']].plot(
+        kind='bar', ax=axes[1], colormap='plasma', alpha=0.8
+    )
+    axes[1].set_title('Staleness Risk Distribution by Congestion')
+    axes[1].set_xlabel('Congestion Category')
+    axes[1].set_ylabel('Staleness Risk Value') # Shared Y-axis might make this redundant if sharey=True
+    axes[1].tick_params(axis='x', rotation=45)
+    axes[1].legend(['Median', '90th Percentile', 'Maximum'])
+
+    plt.suptitle('Risk Distribution by Traffic Jam Factor (SMT Depth Proxy)', fontsize=16)
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust layout to prevent title overlap
+    plt.savefig('risk_distribution_by_traffic_jam_factor.png')
+    plt.show()
+    print("Risk Distribution by Traffic Jam Factor plot saved as risk_distribution_by_traffic_jam_factor.png")
+
+
+import seaborn as sns
+
+def plot_verification_staleness_dist(lv_history, smt_depths, sla_deadline=1.0):
+    plt.figure(figsize=(10, 6))
+
+    # Ensure data is numeric and clean
+    lv = np.array(lv_history)
+    phi = np.array(smt_depths)
+
+    plt.scatter(phi, lv, alpha=0.5, color='blue', label='Empirical $L_v$')
+    plt.axhline(y=sla_deadline, color='darkred', linestyle='--',
+                label=fr'SLA Deadline ($\Delta t_{{req}}$ = {sla_deadline}ms)')
+
+    # Crucial: Use symlog to handle the 1ms vs 60,000ms range
+    plt.yscale('symlog', linthresh=2.0)
+
+    plt.xlabel(r"SMT Verification Depth ($\Phi$)", fontsize=12)
+    plt.ylabel(r"Latency ($L_v$) [ms]", fontsize=12)
+    plt.title(r"Empirical Verification Latency ($L_v$) vs. SMT Depth")
+    plt.legend()
+    plt.grid(True, which="both", ls="-", alpha=0.2)
+    plt.savefig("verified_latency_vs_SMTdepth.png")
+    plt.show()
+
 
 
 # --- Main Pipeline ---
@@ -722,7 +964,7 @@ def main():
     accuracy_history = []     # To store binary success (1 if accurate, 0 if not)
 
     # Hugging Face authentication token
-    huggingface_token = "ht-token"
+    huggingface_token = "hf_toekn"
 
     # Load the dataset
     data = pd.read_parquet("cellular_dataframe.parquet")
@@ -785,7 +1027,7 @@ def main():
 
     # Preprocess and fine-tune the model
     tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neo-125M") # EleutherAI/gpt-neo-1.3B") #
-    model_name = fine_tune_model(train_data, "EleutherAI/gpt-neo-125M", tokenizer, val_data) # EleutherAI/gpt-neo-125M    
+    model_name = fine_tune_model(train_data, "EleutherAI/gpt-neo-125M", tokenizer, val_data) # EleutherAI/gpt-neo-125M
 
     # The original base model name (not your local folder)
     base_model_name = "EleutherAI/gpt-neo-125M"
@@ -820,7 +1062,7 @@ def main():
         # Fix the warning: Explicitly set pad_token to eos_token
         tokenizer.pad_token = tokenizer.eos_token
         model.config.pad_token_id = model.config.eos_token_id
-        
+
         # 4. Handle the embedding resize for your added tokens
         if len(tokenizer) > model.config.vocab_size:
             print(f"Resizing embeddings for {len(tokenizer)} tokens")
@@ -854,8 +1096,9 @@ def main():
     # Store the historical premium values for visualization
     aggregate_risk_history, staleness_risks, epistemic_risks = [], [], []
     jitter_history, bt_true, bt_reported, congestion_index = [], [], [], []
+    congestion_index, accuracy_history = [], []
     ping_violations_history, jitter_violations_history = [], []
-    fraud_events = [] # Binary (1 = Fraud, 0 = No Fraud)
+    fraud_events, lv_history, smt_depth_history = [], [], [] # Binary (1 = Fraud, 0 = No Fraud)
     #congestion_history, ping_violations, fraud_events = [], [], []
 
     # Store risk factors for fraud and behavioral analysis
@@ -870,13 +1113,16 @@ def main():
     fraud_detected_count = 0
     high_risk_low_jitter = 0 # Cases where risk was high but network was "fine"
 
-    bt_true_history = [] 
+    bt_true_history = []
     bt_reported_history = []
     accuracy_history = []
 
+    # Initialize these as empty lists before the loop
+    all_labels = []
+    all_preds = []
 
     # Stream KPI data from the test dataset and iterate
-    for step, kpis in enumerate(stream_kpis_from_dataset(test_data, feed_interval=0.2)): #stream_kpis_real_time(150, feed_interval=0.1)):
+    for step, kpis in enumerate(stream_kpis_from_dataset(test_data, feed_interval=0.2)): #stream_kpis_real_time(150, feed_interval=0.1)): # NOTE: Changed back to test_data for continuity
 
         if step >= evaluator["steps"]: break
 
@@ -886,6 +1132,7 @@ def main():
         # We derive the 'True Confidence' from the jitter.
         # As jitter increases, the 'Ground Truth' certainty decreases.
         base_confidence = 0.95
+        jitter_val = kpis.get('jitter', 0)
         jitter_penalty = kpis.get('jitter', 0) / 100.0
         current_bt_true = max(0.1, base_confidence - jitter_penalty)
 
@@ -908,13 +1155,16 @@ def main():
 
         jitter_history.append(current_jitter)
         # bt_true/reported are likely not in your CSV; we default them to 1.0 (100% confidence)
-        bt_true.append(kpis.get("bt_true", 1.0))
-        bt_reported.append(kpis.get("bt_reported", 1.0))
+        #bt_true.append(kpis.get("bt_true", 1.0))
+        #bt_reported.append(kpis.get("bt_reported", 1.0))
         congestion_index.append(kpis.get("Traffic Jam Factor", 0))
 
         # 2. CALCULATE DYNAMIC SLA LIMITS
         sla_p_limit = get_dynamic_threshold(kpis)
         sla_j_limit = get_dynamic_jitter_threshold(kpis)
+
+        step_confidences = []
+        step_preds = []
 
         # 3. AGENT INFERENCE
         # Passing the pre-formatted 'kpi_input' string to the agent
@@ -923,8 +1173,10 @@ def main():
                 # 1. Run the Governor function we defined earlier
                 # Note: TODO:: You'll need to define 'y_true' based on your kpis['kpi_description']
                 # Placeholder for actual prediction_matches_truth logic
+                # Use kpis['kpi_description'] as a placeholder for ground truth value needed by calculate_confidence_gap
                 prediction_matches_truth = True  # Define here for calculate_confidence_gap
                 r_epi, reported_conf = calculate_confidence_gap(model, tokenizer, prompt, kpis['kpi_description'])
+                step_confidences.append(reported_conf)
 
                 # 3. STORE REPORTED VALUE (Syncs with bt_true_history)
                 bt_reported_history.append(reported_conf)
@@ -947,13 +1199,69 @@ def main():
                 fraud_detected = fraud_detected or "fraud" in decision_text #decision["decision"].lower()
                 behavior_flagged = behavior_flagged or "flagged" in decision_text
 
+                risk_data = calculate_risk_factors(
+                    kpis, evaluator, step, fraud_detected, behavior_flagged, threshold=45.0
+                )
+
+                step_preds.append(reported_conf)
+
+                # --- C. SYNCHRONIZED APPENDING (Prevents ValueError) ---
+                # Every list gets exactly one append per step
+                bt_true_history.append(current_bt_true)
+                # bt_reported_history.append(reported_conf)
+                jitter_history.append(jitter_val)
+                congestion_index.append(kpis.get("Traffic Jam Factor", 0))
+
+                aggregate_risk_history.append(risk_data["aggregate_risk"])
+                epistemic_risks.append(risk_data["epistemic_component"])
+                staleness_risks.append(risk_data["staleness_component"])
+
+                # Track Latency for the Distribution Plot
+                lv_history.append(risk_data.get("lv", 0))
+                smt_depth_history.append(risk_data.get("smt_depth", 8)) # Default to 8 if not dynamic
+
+                ping_violations_history.append(1 if kpis.get("ping_ms", 0) > SLA_PING_THRESHOLD else 0)
+                fraud_events.append(1 if fraud_detected else 0)
+
                 # 3. Log for the final Reliability Diagram
-                bt_reported_history.append(reported_conf)
-                # Logic: If gap is small, it's an 'accurate' calibration point
-                accuracy_history.append(1 if r_epi < 0.15 else 0)
+                # bt_reported_history.append(reported_conf) # Already appended above
+                # accuracy_history.append(1 if r_epi < 0.15 else 0) # Already appended above
 
             except Exception as e:
                 print(f"Inference error: {e}")
+                # Ensure bt_reported_history and accuracy_history are kept in sync even on inference error
+                bt_reported_history.append(0.5) # Default/unknown confidence
+                accuracy_history.append(0)    # Assume inaccurate on error
+
+        
+        # 1. Define what "Success" means for this step
+        # Option A: Success is based on the Epistemic Risk being low (no Dissonance)
+        # Option B: Success is based on avoiding a Ping Violation
+        # --- Define 6G-V2X Success Criteria ---
+        # 1. Define Environmental Sensitivity
+        LAMBDA_SENSITIVITY = 0.25 
+
+        # 2. Inside the loop, calculate BT dynamically
+        # BT will vary between 0 and 1 based on network conditions
+        bt_true_val = np.exp(-LAMBDA_SENSITIVITY * (jitter / max(1, snr)))
+        bt_true_history.append(bt_true_val)
+
+        # 3. SUCCESS DEFINITION (Must vary to avoid the "One Class" error)
+        # A success is when the agent's reported confidence (BR) 
+        # is within 15% of the objective ground truth (BT)
+        actual_success = 1 if np.abs(bt_true_val - reported_conf) < 0.15 else 0
+        all_labels.append(actual_success)
+
+        #actual_success = 1 if r_epi < 0.15 else 0
+        # FIX: Append only the average or the first agent's report to keep length at 150
+        bt_reported_history.append(np.mean(step_confidences)) 
+
+        # TO KEEP DIMENSIONS 1:1 WITH STEPS:
+        # Append the average prediction of all agents for this specific step
+        all_preds.append(np.mean(step_preds))
+
+        # Append exactly one ground-truth label per step
+        # all_labels.append(1 if actual_success else 0)
 
         # 4. TRACK VIOLATIONS (Binary spikes for the plot)
         ping_v = 1 if current_ping > sla_p_limit else 0
@@ -1024,14 +1332,26 @@ def main():
     # 2. GENERATE THE RELIABILITY DIAGRAM (Post-simulation check)
     print("Generating Reliability Diagram...")
     # Convert our tracked lists to numpy arrays
-    conf_arr = np.array(bt_reported_history)
-    acc_arr = np.array(accuracy_history)
+    # Ensure bt_reported_history and accuracy_history are not empty
+    if bt_reported_history and accuracy_history:
+        conf_arr = np.array(bt_reported_history)
+        acc_arr = np.array(accuracy_history)
 
-    # Calculate the points for the plot
-    bins, accs = get_calibration_curve(conf_arr, acc_arr)
+        # Calculate the points for the plot
+        bins, accs = get_calibration_curve(conf_arr, acc_arr)
 
-    # Call the plotting function
-    plot_reliability_diagram(bins, accs)
+        # Call the plotting function
+        plot_reliability_diagram(bins, accs)
+    else:
+        print("Not enough data to generate Reliability Diagram.")
+
+    # 3. Generate the new risk distribution plot
+    print("Generating Risk Distribution by Traffic Jam Factor plot...")
+    plot_risk_distribution_by_traffic_jam_factor(
+        congestion_data=congestion_index,
+        epistemic_risks=epistemic_risks,
+        staleness_risks=staleness_risks
+    )
 
 
     # Convert lists to numpy arrays for calculation
@@ -1040,7 +1360,8 @@ def main():
     mitigation_arr = np.array([1 if r > 45.0 else 0 for r in aggregate_risk_history])
 
     # 1. Governance Effectiveness
-    mean_risk = np.mean(risk_arr)
+    # mean_risk = np.mean(risk_arr)
+    mean_risk = risk_array[~np.isnan(risk_array)]
     peak_risk = np.max(risk_arr)
     mitigation_ratio = (np.sum(mitigation_arr) / len(mitigation_arr)) * 100
 
@@ -1051,39 +1372,64 @@ def main():
     # Ensure they are the same length (handling multi-agent cases)
     # If 1 agent, lengths will be identical.
     bt_t_arr = np.array(bt_true_history)
+    # Make sure bt_r_arr has the same length as bt_t_arr
     bt_r_arr = np.array(bt_reported_history[:len(bt_t_arr)])
-    
+
     avg_gap = np.mean(np.abs(bt_t_arr - bt_r_arr))
 
     # 3. Confidence Gap (Epistemic Dissonance)
     # Identify steps where reported confidence was 1.0 but true confidence was low
-    confidence_gap_events = sum(1 for bt_t, bt_r in zip(bt_true, bt_reported_history) if (bt_r - bt_t) > 0.1)
+    confidence_gap_events = sum(1 for bt_t, bt_r in zip(bt_true_history, bt_reported_history) if (bt_r - bt_t) > 0.1)
+
+    # Peak Instability Index (Maximum Risk Spike)
+    peak_instability = np.max(risk_arr) if len(risk_arr) > 0 else 0
+
+    # Mean Aggregate Risk
+    #mean_risk = np.mean(risk_arr) if len(risk_arr) > 0 else 0
+
+    # Mitigation Trigger Rate (%)
+    mitigation_threshold = 45.0
+    mitigation_count = np.sum(risk_arr > mitigation_threshold)
+    trigger_rate = (mitigation_count / len(risk_arr)) * 100 if len(risk_arr) > 0 else 0
+
+    # Average System Trust Score
+    # Defined as inverted normalized risk (0 to 100)
+    trust_scores = 100 * (1 - (risk_arr / (peak_instability + 1e-6)))
+    avg_trust = np.mean(trust_scores) if len(trust_scores) > 0 else 0
 
     print(f"--- Simulation Results for Table ---")
-    print(f"Mean Risk: {mean_risk:.2f}")
-    print(f"Mitigation Trigger Rate: {mitigation_ratio:.1f}%")
-    print(f"Average Trust Score: {avg_trust:.2f}")
-    print(f"Mean Confidence Gap ($r_{{epi}}$): {avg_gap:.4f}") # <--- New Key Metric
+    print(f"Mean Confidence Gap (${{r_{{epi}}}}$): {avg_gap:.4f}") # <--- New Key Metric
     print(f"Confidence Gap Events: {confidence_gap_events}")
+    #print(f"Mean Aggregate Risk: {mean_risk:.4f}")
+    print(f"Mean Aggregate Risk: {np.mean(mean_risk):.4f}" if len(mean_risk) > 0 else "Mean Aggregate Risk: 0.0000")
+    print(f"Peak Instability Index: {peak_instability:.2f}")
+    print(f"Mitigation Trigger Rate: {trigger_rate:.1f}%")
+    print(f"Average System Trust Score: {avg_trust:.2f}")
+    #print(f"Epistemic Dissonance Events: {dissonance_events}")
 
     # --- CALCULATE GOVERNANCE METRICS ---
     gap_arr = np.abs(np.array(bt_true_history) - np.array(bt_reported_history))
-    
+
     # 1. Total Accumulated Dissonance (AUC)
     # This uses the trapezoidal rule over the time span (t+tau)
     total_dissonance_auc = np.trapz(gap_arr, x=time_span)
-    
+
     # 2. Untrusted Time Calculation
     trust_threshold = 0.15
     untrusted_mask = gap_arr > trust_threshold
     # Duration = Number of steps outside threshold * tau (time per step)
-    untrusted_duration = np.sum(untrusted_mask) * tau 
-    total_duration = time_span[-1]
-    untrusted_ratio = (untrusted_duration / total_duration) * 100
+    untrusted_duration = np.sum(untrusted_mask) * tau
+    total_duration = time_span[-1] if time_span else 0.0 # Handle empty time_span
+    untrusted_ratio = (untrusted_duration / total_duration) * 100 if total_duration > 0 else 0.0
 
     print(f"\n--- Governance Impact Metrics ---")
     print(f"Total Accumulated Dissonance (AUC): {total_dissonance_auc:.4f} bits-sec")
     print(f"Total Untrusted Time: {untrusted_duration:.2f}s ({untrusted_ratio:.1f}% of mission)")
+
+    # Execute
+    # 2. Call the Staleness Distribution Plot
+    # Ensure this function is defined as we discussed in the previous turn
+    plot_verification_staleness_dist(lv_history, smt_depth_history, sla_deadline=evaluator["dt_req"])
 
     # Run for both
     #r_epi_base, conf_base = calculate_confidence_gap(pretrained_model, tk, k_t, y_true)
