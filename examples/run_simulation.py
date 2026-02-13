@@ -135,7 +135,6 @@ def main():
         behavior_flagged = False
         
         # Calculate ground truth confidence
-        base_confidence = 0.95
         snr_val = kpis.get('PCell_SNR_1', 20)
         jitter_val = kpis.get('jitter', 0.5)
         current_bt_true = np.exp(-config.LAMBDA_SENSITIVITY * (jitter_val / max(1, snr_val)))
@@ -258,6 +257,34 @@ def main():
     
     risk_arr = np.array(aggregate_risk_history)
     mean_risk = risk_arr[~np.isnan(risk_arr)]
-    peak_risk = np.max(risk_arr)
     
+    if len(mean_risk) > 0:
+        print(f"Mean Aggregate Risk: {np.mean(mean_risk):.4f}")
+        print(f"Peak Risk: {np.max(mean_risk):.2f}")
     
+    # Calculate confidence gap
+    min_len = min(len(bt_true_history), len(bt_reported_history))
+    if min_len > 0:
+        bt_t_arr = np.array(bt_true_history[:min_len])
+        bt_r_arr = np.array(bt_reported_history[:min_len])
+        avg_gap = np.mean(np.abs(bt_t_arr - bt_r_arr))
+        print(f"Mean Confidence Gap: {avg_gap:.4f}")
+        
+        gap_arr = np.abs(bt_t_arr - bt_r_arr)
+        time_span_aligned = time_span[:min_len]
+        total_dissonance_auc = np.trapz(gap_arr, x=time_span_aligned)
+        
+        untrusted_mask = gap_arr > config.TRUST_THRESHOLD
+        untrusted_duration = np.sum(untrusted_mask) * tau
+        total_duration = time_span_aligned[-1] if len(time_span_aligned) > 0 else 0.0
+        untrusted_ratio = (untrusted_duration / total_duration) * 100 if total_duration > 0 else 0.0
+        
+        print(f"Total Accumulated Dissonance (AUC): {total_dissonance_auc:.4f} bits-sec")
+        print(f"Total Untrusted Time: {untrusted_duration:.2f}s ({untrusted_ratio:.1f}% of mission)")
+    
+    print("="*60)
+    print("\nSimulation complete!")
+
+
+if __name__ == "__main__":
+    main()
