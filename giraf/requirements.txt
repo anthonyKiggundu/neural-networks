@@ -1,0 +1,24 @@
+# Core dependencies
+torch>=2.0.0
+transformers>=4.30.0
+accelerate>=0.20.0
+peft>=0.4.0
+bitsandbytes>=0.40.0
+
+# Data processing
+pandas>=1.5.0
+numpy>=1.23.0
+pyarrow>=12.0.0
+datasets>=2.12.0
+scikit-learn>=1.2.0
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+scipy>=1.10.0
+
+# Training utilities
+torch-utils>=0.1.2
+
+# Optional: For better performance
+ninja>=1.11.0
