@@ -1,4 +1,4 @@
-# GIRAF: Governance-Informed Risk Assessment Framework
+# GIRAF: Governance-Integrated Risk and Assurance Framework
 
 A comprehensive framework for 6G network KPI decision-making using LLM agents with governance-as-code (GaC) risk assessment.
 
