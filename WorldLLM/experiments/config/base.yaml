@@ -1,0 +1,19 @@
+experiment_name: "baseline_world_model"
+
+data:
+  grid_size: 128
+  sequence_length: 12
+
+training:
+  batch_size: 1
+  epochs: 20
+  lr: 0.0001
+  teacher_forcing_steps: 1
+
+model:
+  hidden_dim: 64
+  event_dim: 16
+
+rollout:
+  horizon: 20
+
