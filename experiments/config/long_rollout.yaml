@@ -1,9 +1,0 @@
-experiment_name: "long_rollout"
-
-training:
-  epochs: 30
-  teacher_forcing_steps: 3
-
-rollout:
-  horizon: 50
-

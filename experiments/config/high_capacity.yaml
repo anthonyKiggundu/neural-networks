@@ -1,9 +1,0 @@
-experiment_name: "high_capacity"
-
-model:
-  hidden_dim: 128
-
-training:
-  lr: 0.00005
-  epochs: 30
-
