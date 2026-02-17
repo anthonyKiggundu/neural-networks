@@ -3,7 +3,7 @@ from torch.utils.data import Dataset
 import pandas as pd
 import numpy as np
 
-DATA_PATH = "data/processed/world_dataset.parquet"
+DATA_PATH = "data/processed/world_tensor.npy"
 
 
 class WorldModelDataset(Dataset):
