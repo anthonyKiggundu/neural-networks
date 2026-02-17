@@ -52,7 +52,7 @@ pip install -e .
 
 ### Data Preparation
 
-Place your `cellular_dataframe.parquet` file in the project root directory. The dataset should contain:
+Get the dataset (https://ieee-dataport.org/open-access/berlin-v2x) and place the `cellular_dataframe.parquet` file in the project root directory. The dataset should contain:
 - Network KPIs: `ping_ms`, `jitter`, `datarate`, `target_datarate`
 - Signal metrics: `PCell_RSRP_1`, `PCell_RSRQ_1`, `PCell_SNR_1`
 - Mobility data: `speed_kmh`, `Latitude`, `Longitude`, `Altitude`
